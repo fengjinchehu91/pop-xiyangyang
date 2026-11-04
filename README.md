@@ -1,0 +1,9 @@
+
+// Cloudflare 部署设置：告诉 Cloudflare 网站文件在 site 文件夹里
+{
+  "name": "pop-xiyangyang",
+  "compatibility_date": "2026-09-01",
+  "assets": {
+    "directory": "./site"
+  }
+}
