@@ -290,7 +290,7 @@ function MinePage(props: {
           </>
         }
         img=""
-        tag={`每日 ${pct(snap.params.rateBps)} · 随存随取`}
+        tag="每日 0.1%～0.5% · 随存随取"
       />
       <StatusLine snap={snap} />
 
@@ -356,7 +356,7 @@ function MinePage(props: {
                 ⊕ 添加流动性
               </button>
               <button className="btn-line" disabled={!canTx || !u || u.liquidity === 0n} onClick={() => open("exit")}>
-                ⊖ 退出流动性
+                ⊖ 撤回流动性
               </button>
             </div>
             {u && u.liquidity > 0n && u.tokenId > 0n && snap.addresses.npm && (
@@ -896,7 +896,7 @@ function ExitSheet({ snap, backend, account, canTx, close, done }: { snap: Snaps
   };
   const allDone = steps?.every((x) => x.status === "done");
   return (
-    <Sheet title="退出流动性" close={close} icon={<span className="ic-c">⊖</span>}>
+    <Sheet title="撤回流动性" close={close} icon={<span className="ic-c">⊖</span>}>
       <div className="pct-big">{pct >= 10000 ? "全部" : `${pct / 100}%`}</div>
       <div className="pct-row">
         {[2500, 5000, 7500, 10000].map((p) => (
@@ -940,7 +940,7 @@ function ExitSheet({ snap, backend, account, canTx, close, done }: { snap: Snaps
         <button className="btn-green wide" onClick={close}>完成</button>
       ) : (
         <button className="btn-green wide" disabled={!canTx || !q || running || q.liquidity === 0n} onClick={go}>
-          {running ? "处理中…" : steps?.some((x) => x.status === "error") ? "重试" : "确认退出"}
+          {running ? "处理中…" : steps?.some((x) => x.status === "error") ? "重试" : "确认撤回"}
         </button>
       )}
     </Sheet>

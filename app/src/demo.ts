@@ -170,7 +170,7 @@ export class DemoBackend {
     const tx = "0x" + "ab".repeat(32);
     const L: Rec[] = [
       { kind, title: "添加流动性", sign: "+", lines: [{ label: "投入", value: "500.00 USDT" }, { label: "退回余量", value: "0.21 USDT / 1,180.00 POP" }], time: t - 3600 * 5, tx, status: "已完成" },
-      { kind, title: "退出流动性", sign: "-", lines: [{ label: "本金返还", value: "1,875,000 POP + 312.50 USDT" }, { label: "手续费", value: "2,140 POP + 0.36 USDT" }], time: t - 86400 * 2, tx, status: "已完成" },
+      { kind, title: "撤回流动性", sign: "-", lines: [{ label: "本金返还", value: "1,875,000 POP + 312.50 USDT" }, { label: "手续费", value: "2,140 POP + 0.36 USDT" }], time: t - 86400 * 2, tx, status: "已完成" },
       { kind, title: "添加流动性", sign: "+", lines: [{ label: "投入", value: "1,000.00 USDT" }, { label: "退回余量", value: "0.40 USDT / 0.00 POP" }], time: t - 86400 * 4, tx, status: "已完成" },
     ];
     const C: Rec[] = [

@@ -566,7 +566,7 @@ export class ChainBackend {
       if (l.fragment.name === "Withdrawn")
         return {
           kind,
-          title: "退出流动性",
+          title: "撤回流动性",
           sign: "-",
           lines: [
             { label: "本金返还", value: `${fmtUnits(a.popPrincipal, d.pop)} POP + ${fmtUnits(a.usdtPrincipal, d.usdt)} USDT` },
