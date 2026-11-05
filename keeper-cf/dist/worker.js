@@ -1477,12 +1477,13 @@ function config(env) {
 }
 function freshState(c) {
   return {
-    v: 1,
+    v: 2,
     miner: c.miner,
     scanned: c.deployBlock - 1,
     chunk: c.logChunk,
+    // address -> [liquidity, hasReferrer (0/1), referrer, usdtOnlyIn, bothUsdtIn, bothPopIn, bothValueUsdt]
+    // (amounts as decimal strings in raw token units; *In = put in by deposits, net of refunds)
     users: {},
-    // address -> [liquidity (decimal string), hasReferrer (0/1)]
     settleCursor: 0,
     lastSettle: 0,
     lastSentAt: 0,
@@ -1502,28 +1503,101 @@ async function loadState(env, c) {
   try {
     let s = await env.STATE.get("state", "json");
     if (memState && memState.miner === c.miner && (!s || (memState.seq || 0) >= (s.seq || 0))) s = JSON.parse(JSON.stringify(memState));
-    if (!s || s.v !== 1 || s.miner !== c.miner) return { ok: true, s: freshState(c) };
+    if (!s || s.miner !== c.miner || s.v !== 1 && s.v !== 2) return { ok: true, s: freshState(c) };
+    if (s.v === 1) {
+      s.v = 2;
+      s.usersOld = s.users;
+      s.users = {};
+      s.scanned = c.deployBlock - 1;
+      s.rebuilding = true;
+    }
     return { ok: true, s };
   } catch (e) {
     return { ok: false, why: "\u8BFB\u53D6 KV \u5931\u8D25\uFF1A" + (e?.message || e), s: freshState(c) };
   }
 }
+var ZERO_ENTRY = () => ["0", 0, "", "0", "0", "0", "0"];
+var add2 = (e, i, v) => e[i] = (BigInt(e[i] || "0") + v).toString();
 function applyLog(users, l) {
   if (l.removed) return;
   const t0 = (l.topics[0] || "").toLowerCase();
   if (t0 !== T_JOINED && t0 !== T_DEPOSITED && t0 !== T_WITHDRAWN) return;
   const u = "0x" + l.topics[1].slice(26).toLowerCase();
-  const e = users[u] || (users[u] = ["0", 0]);
+  const e = users[u] || (users[u] = ZERO_ENTRY());
+  while (e.length < 7) e.push(e.length === 2 ? "" : "0");
   if (t0 === T_JOINED) {
-    e[1] = big2(l.topics[2]) !== 0n ? 1 : 0;
+    const r = big2(l.topics[2]);
+    e[1] = r !== 0n ? 1 : 0;
+    e[2] = r !== 0n ? "0x" + l.topics[2].slice(26).toLowerCase() : "";
+    return;
+  }
+  const w = (i) => BigInt("0x" + (l.data.slice(2 + 64 * i, 2 + 64 * (i + 1)) || "0"));
+  const liq = w(0);
+  let v = BigInt(e[0]) + (t0 === T_DEPOSITED ? liq : -liq);
+  if (v < 0n) v = 0n;
+  e[0] = v.toString();
+  if (t0 !== T_DEPOSITED) return;
+  const usdtIn = w(1), popIn = w(2), swapped = w(3), usdtRefund = w(5), popRefund = w(6);
+  const pos = (x) => x > 0n ? x : 0n;
+  if (popIn === 0n) {
+    add2(e, 3, pos(usdtIn - usdtRefund));
   } else {
-    const liq = BigInt("0x" + l.data.slice(2, 66));
-    let v = BigInt(e[0]) + (t0 === T_DEPOSITED ? liq : -liq);
-    if (v < 0n) v = 0n;
-    e[0] = v.toString();
+    add2(e, 4, pos(usdtIn - usdtRefund));
+    add2(e, 5, pos(popIn - popRefund));
+    add2(e, 6, pos(2n * (usdtIn - swapped - usdtRefund)));
   }
 }
-var settleList = (s) => Object.keys(s.users).filter((a) => s.users[a][1] === 1 && s.users[a][0] !== "0");
+var settleSource = (s) => s.rebuilding && s.usersOld ? s.usersOld : s.users;
+var settleList = (s) => {
+  const src = settleSource(s);
+  return Object.keys(src).filter((a) => src[a][1] === 1 && src[a][0] !== "0");
+};
+var intStr = (x) => BigInt(Math.round(x)).toString();
+var kidsMemo = /* @__PURE__ */ new WeakMap();
+function teamOf(users, addr) {
+  let kids = kidsMemo.get(users);
+  if (!kids) {
+    kids = /* @__PURE__ */ new Map();
+    for (const a in users) {
+      const r = users[a][2];
+      if (!r) continue;
+      if (!kids.has(r)) kids.set(r, []);
+      kids.get(r).push(a);
+    }
+    kidsMemo.set(users, kids);
+  }
+  const me = String(addr).toLowerCase();
+  const direct = kids.get(me) || [];
+  let indirect = 0;
+  for (const d of direct) indirect += (kids.get(d) || []).length;
+  const sum = [0, 0, 0, 0, 0];
+  const seen = /* @__PURE__ */ new Set([me]);
+  const stack = [...direct];
+  let team = 0;
+  while (stack.length) {
+    const a = stack.pop();
+    if (seen.has(a)) continue;
+    seen.add(a);
+    team++;
+    const e = users[a];
+    sum[0] += +(e[0] || 0);
+    sum[1] += +(e[3] || 0);
+    sum[2] += +(e[4] || 0);
+    sum[3] += +(e[5] || 0);
+    sum[4] += +(e[6] || 0);
+    for (const k of kids.get(a) || []) stack.push(k);
+  }
+  return {
+    direct: direct.length,
+    indirect,
+    team,
+    liquidity: intStr(sum[0]),
+    usdtOnly: intStr(sum[1]),
+    bothUsdt: intStr(sum[2]),
+    bothPop: intStr(sum[3]),
+    bothValue: intStr(sum[4])
+  };
+}
 var cachedKey = null;
 function keyFromString(str, what) {
   str = String(str).trim();
@@ -1577,7 +1651,7 @@ async function runOnce(env) {
     keeper: null,
     balance: null,
     gasPrice: null,
-    users: Object.keys(s.users).length,
+    users: Object.keys(settleSource(s)).length,
     toSettle: settleList(s).length,
     settleHours: null
   };
@@ -1806,11 +1880,15 @@ async function runOnce(env) {
           s.scanned = end;
         }
         if (s.scanned < to) st.actions.push(`\u6B63\u5728\u8BFB\u53D6\u5386\u53F2\u8BB0\u5F55\uFF08\u8FD8\u5DEE\u7EA6 ${to - s.scanned} \u4E2A\u533A\u5757\uFF09`);
+        else if (s.rebuilding) {
+          delete s.usersOld;
+          delete s.rebuilding;
+        }
       } catch (e) {
         st.errors.push("\u8BFB\u53D6\u7528\u6237\u8BB0\u5F55\u5931\u8D25\uFF1A" + (e?.message || e));
       }
       const list = settleList(s);
-      st.users = Object.keys(s.users).length;
+      st.users = Object.keys(settleSource(s)).length;
       st.toSettle = list.length;
       const hours = c.settleHours ?? autoSettleHours(list.length);
       st.settleHours = hours;
@@ -1985,7 +2063,7 @@ var worker_default = {
   async fetch(request, env) {
     const url = new URL(request.url);
     const p = url.pathname.replace(/\/+$/, "") || "/";
-    if (p !== "/" && p !== "/keeper" && p !== "/keeper.json") return new Response("Not found", { status: 404 });
+    if (p !== "/" && p !== "/keeper" && p !== "/keeper.json" && p !== "/keeper/team.json") return new Response("Not found", { status: 404 });
     let s = pageMemo.s;
     if (Date.now() - pageMemo.t > 2e4) {
       try {
@@ -1994,6 +2072,17 @@ var worker_default = {
         s = null;
       }
       if (s) pageMemo = { t: Date.now(), s };
+    }
+    if (p === "/keeper/team.json") {
+      const u = url.searchParams.get("u") || "";
+      let out;
+      if (!/^0x[0-9a-fA-F]{40}$/.test(u)) out = { ok: false, why: "bad address" };
+      else if (!s || !s.users) out = { ok: false, why: "no data yet" };
+      else if (s.rebuilding) out = { ok: false, why: "rebuilding", scanned: s.scanned };
+      else out = { ok: true, at: s.status?.at ?? null, scanned: s.scanned, ...teamOf(s.users, u) };
+      return new Response(JSON.stringify(out), {
+        headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }
+      });
     }
     if (p === "/keeper.json") {
       const out = statusJson(s);

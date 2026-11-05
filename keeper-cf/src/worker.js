@@ -270,11 +270,13 @@ function config(env) {
 
 function freshState(c) {
   return {
-    v: 1,
+    v: 2,
     miner: c.miner,
     scanned: c.deployBlock - 1,
     chunk: c.logChunk,
-    users: {}, // address -> [liquidity (decimal string), hasReferrer (0/1)]
+    // address -> [liquidity, hasReferrer (0/1), referrer, usdtOnlyIn, bothUsdtIn, bothPopIn, bothValueUsdt]
+    // (amounts as decimal strings in raw token units; *In = put in by deposits, net of refunds)
+    users: {},
     settleCursor: 0,
     lastSettle: 0,
     lastSentAt: 0,
@@ -294,7 +296,16 @@ async function loadState(env, c) {
   try {
     let s = await env.STATE.get("state", "json");
     if (memState && memState.miner === c.miner && (!s || (memState.seq || 0) >= (s.seq || 0))) s = JSON.parse(JSON.stringify(memState));
-    if (!s || s.v !== 1 || s.miner !== c.miner) return { ok: true, s: freshState(c) };
+    if (!s || s.miner !== c.miner || (s.v !== 1 && s.v !== 2)) return { ok: true, s: freshState(c) };
+    if (s.v === 1) {
+      // team statistics need the referrer and deposit amounts of every wallet: read all events again from the start.
+      // The old wallet list keeps the referral settlement going until the new one has caught up.
+      s.v = 2;
+      s.usersOld = s.users;
+      s.users = {};
+      s.scanned = c.deployBlock - 1;
+      s.rebuilding = true;
+    }
     return { ok: true, s };
   } catch (e) {
     // never overwrite the saved wallet list after a failed read
@@ -302,23 +313,96 @@ async function loadState(env, c) {
   }
 }
 
+const ZERO_ENTRY = () => ["0", 0, "", "0", "0", "0", "0"];
+const add = (e, i, v) => (e[i] = (BigInt(e[i] || "0") + v).toString());
+
 function applyLog(users, l) {
   if (l.removed) return;
   const t0 = (l.topics[0] || "").toLowerCase();
   if (t0 !== T_JOINED && t0 !== T_DEPOSITED && t0 !== T_WITHDRAWN) return;
   const u = "0x" + l.topics[1].slice(26).toLowerCase();
-  const e = users[u] || (users[u] = ["0", 0]);
+  const e = users[u] || (users[u] = ZERO_ENTRY());
+  while (e.length < 7) e.push(e.length === 2 ? "" : "0");
   if (t0 === T_JOINED) {
-    e[1] = big(l.topics[2]) !== 0n ? 1 : 0;
+    const r = big(l.topics[2]);
+    e[1] = r !== 0n ? 1 : 0;
+    e[2] = r !== 0n ? "0x" + l.topics[2].slice(26).toLowerCase() : "";
+    return;
+  }
+  const w = (i) => BigInt("0x" + (l.data.slice(2 + 64 * i, 2 + 64 * (i + 1)) || "0"));
+  const liq = w(0);
+  let v = BigInt(e[0]) + (t0 === T_DEPOSITED ? liq : -liq);
+  if (v < 0n) v = 0n;
+  e[0] = v.toString();
+  if (t0 !== T_DEPOSITED) return;
+  // Deposited data: liquidity, usdtIn, popIn, usdtSwapped, popFromSwap, usdtRefund, popRefund
+  const usdtIn = w(1), popIn = w(2), swapped = w(3), usdtRefund = w(5), popRefund = w(6);
+  const pos = (x) => (x > 0n ? x : 0n);
+  if (popIn === 0n) {
+    add(e, 3, pos(usdtIn - usdtRefund)); // USDT only
   } else {
-    const liq = BigInt("0x" + l.data.slice(2, 66));
-    let v = BigInt(e[0]) + (t0 === T_DEPOSITED ? liq : -liq);
-    if (v < 0n) v = 0n;
-    e[0] = v.toString();
+    add(e, 4, pos(usdtIn - usdtRefund)); // USDT + POP
+    add(e, 5, pos(popIn - popRefund));
+    // full range: the POP side is worth the same as the USDT that went into the position
+    add(e, 6, pos(2n * (usdtIn - swapped - usdtRefund)));
   }
 }
 
-const settleList = (s) => Object.keys(s.users).filter((a) => s.users[a][1] === 1 && s.users[a][0] !== "0");
+const settleSource = (s) => (s.rebuilding && s.usersOld ? s.usersOld : s.users);
+const settleList = (s) => {
+  const src = settleSource(s);
+  return Object.keys(src).filter((a) => src[a][1] === 1 && src[a][0] !== "0");
+};
+
+const intStr = (x) => BigInt(Math.round(x)).toString();
+
+/** team of `addr`: every wallet below it (all levels) that has deposited, excluding itself */
+const kidsMemo = new WeakMap(); // users object -> referrer -> [wallets] (rebuilt when a new state is loaded)
+export function teamOf(users, addr) {
+  let kids = kidsMemo.get(users);
+  if (!kids) {
+    kids = new Map();
+    for (const a in users) {
+      const r = users[a][2];
+      if (!r) continue;
+      if (!kids.has(r)) kids.set(r, []);
+      kids.get(r).push(a);
+    }
+    kidsMemo.set(users, kids);
+  }
+  const me = String(addr).toLowerCase();
+  const direct = kids.get(me) || [];
+  let indirect = 0;
+  for (const d of direct) indirect += (kids.get(d) || []).length;
+  // summed as floating point (fast enough for thousands of wallets within the 10 ms CPU limit; display precision only)
+  const sum = [0, 0, 0, 0, 0]; // liquidity, usdtOnly, bothUsdt, bothPop, bothValue
+  const seen = new Set([me]);
+  const stack = [...direct];
+  let team = 0;
+  while (stack.length) {
+    const a = stack.pop();
+    if (seen.has(a)) continue;
+    seen.add(a);
+    team++;
+    const e = users[a];
+    sum[0] += +(e[0] || 0);
+    sum[1] += +(e[3] || 0);
+    sum[2] += +(e[4] || 0);
+    sum[3] += +(e[5] || 0);
+    sum[4] += +(e[6] || 0);
+    for (const k of kids.get(a) || []) stack.push(k);
+  }
+  return {
+    direct: direct.length,
+    indirect,
+    team,
+    liquidity: intStr(sum[0]),
+    usdtOnly: intStr(sum[1]),
+    bothUsdt: intStr(sum[2]),
+    bothPop: intStr(sum[3]),
+    bothValue: intStr(sum[4]),
+  };
+}
 
 // ------------------------------------------------------------------ one scheduled run
 
@@ -382,7 +466,7 @@ export async function runOnce(env) {
     keeper: null,
     balance: null,
     gasPrice: null,
-    users: Object.keys(s.users).length,
+    users: Object.keys(settleSource(s)).length,
     toSettle: settleList(s).length,
     settleHours: null,
   };
@@ -630,11 +714,15 @@ export async function runOnce(env) {
           s.scanned = end;
         }
         if (s.scanned < to) st.actions.push(`正在读取历史记录（还差约 ${to - s.scanned} 个区块）`);
+        else if (s.rebuilding) {
+          delete s.usersOld;
+          delete s.rebuilding;
+        }
       } catch (e) {
         st.errors.push("读取用户记录失败：" + (e?.message || e));
       }
       const list = settleList(s);
-      st.users = Object.keys(s.users).length;
+      st.users = Object.keys(settleSource(s)).length;
       st.toSettle = list.length;
       const hours = c.settleHours ?? autoSettleHours(list.length);
       st.settleHours = hours;
@@ -831,7 +919,7 @@ export default {
     const url = new URL(request.url);
     // "/" only reaches this code when the Worker runs without the website files next to it
     const p = url.pathname.replace(/\/+$/, "") || "/";
-    if (p !== "/" && p !== "/keeper" && p !== "/keeper.json") return new Response("Not found", { status: 404 });
+    if (p !== "/" && p !== "/keeper" && p !== "/keeper.json" && p !== "/keeper/team.json") return new Response("Not found", { status: 404 });
     let s = pageMemo.s;
     if (Date.now() - pageMemo.t > 20000) {
       try {
@@ -840,6 +928,17 @@ export default {
         s = null;
       }
       if (s) pageMemo = { t: Date.now(), s }; // remember only real data (setup in progress: always re-read)
+    }
+    if (p === "/keeper/team.json") {
+      const u = url.searchParams.get("u") || "";
+      let out;
+      if (!/^0x[0-9a-fA-F]{40}$/.test(u)) out = { ok: false, why: "bad address" };
+      else if (!s || !s.users) out = { ok: false, why: "no data yet" };
+      else if (s.rebuilding) out = { ok: false, why: "rebuilding", scanned: s.scanned };
+      else out = { ok: true, at: s.status?.at ?? null, scanned: s.scanned, ...teamOf(s.users, u) };
+      return new Response(JSON.stringify(out), {
+        headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+      });
     }
     if (p === "/keeper.json") {
       const out = statusJson(s);
@@ -869,4 +968,4 @@ export default {
   },
 };
 
-export const __test = { SEL, T_JOINED, T_DEPOSITED, T_WITHDRAWN };
+export const __test = { SEL, T_JOINED, T_DEPOSITED, T_WITHDRAWN, applyLog };

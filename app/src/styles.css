@@ -267,3 +267,13 @@ a { color: var(--g6); }
 .gate-fine { margin: 10px 0 0; text-align: left; }
 .gate-msg.ok-txt { color: var(--g6); font-weight: 600; }
 .wait-note { color: var(--g7); font-weight: 600; margin: 8px 0 0; }
+/* team statistics */
+.team-h { font-weight: 700; color: var(--g8); font-size: 15px; margin: 2px 0 2px; }
+.team .kv + .team-h { margin-top: 12px; }
+.team .kv b { font-size: 14px; }
+.team-sum { color: var(--g6); font-size: 16px !important; }
+.team-counts { grid-template-columns: repeat(3, 1fr); margin: 12px 0 0; padding: 10px 0; }
+.card .card.team { margin: 10px 0 0; padding: 12px; box-shadow: none; }
+.team .kv b { word-break: normal; }
+.team .nw { display: block; font-style: normal; white-space: nowrap; }
+@media (max-width: 374px) { .team .kv b { font-size: 13px; } }

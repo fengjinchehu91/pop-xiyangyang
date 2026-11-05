@@ -80,6 +80,20 @@ export interface Rec {
   sign?: "+" | "-";
 }
 
+/** a wallet's whole team (every level below it, wallets that have added liquidity, excluding itself) */
+export interface TeamStats {
+  direct: number;
+  indirect: number;
+  team: number;
+  usdtOnly: bigint; // put in with "USDT only" (USDT raw units)
+  bothUsdt: bigint; // put in with "USDT + POP": USDT part
+  bothPop: bigint; //   ... POP part (POP raw units)
+  bothValue: bigint; //  ... both parts in USDT raw units (at the time of adding)
+  nowPop: bigint; // still in the pool now
+  nowUsdt: bigint;
+  nowValueUsd: bigint; // 18-dec USD reference value
+}
+
 export interface Downline {
   address: string;
   firstDepositAt: number;

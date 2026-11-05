@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { AppConfig } from "./config";
 import { ChainBackend, humanError, switchChain, walletAccounts, walletChainId } from "./chain";
 import { DemoBackend } from "./demo";
-import type { AddQuote, AdminEvent, AdminUserRow, Downline, ExitQuote, Rec, RecKind, Snapshot, Step } from "./types";
+import type { AddQuote, AdminEvent, AdminUserRow, Downline, ExitQuote, Rec, RecKind, Snapshot, Step, TeamStats } from "./types";
 import { REASON_TEXT } from "./types";
 import { applySlippage, E18, fmtTime, fmtUnits, parseUnitsSafe, short, usdToToken } from "./fmt";
 
@@ -277,6 +277,73 @@ function BindGate({ cfg, snap, backend, refParam, account, canTx, demo, onConnec
         <p className="fine gate-fine">绑定关系记录在链上，绑定后不能修改。绑定需要钱包确认一次，会花极少的 BNB 手续费。</p>
       </section>
     </main>
+  );
+}
+
+// ------------------------------------------------------------------ team statistics (referral page + admin lookup)
+function useTeam(backend: Backend, addr: string): TeamStats | null {
+  const [t, setT] = useState<TeamStats | null>(null);
+  useEffect(() => {
+    setT(null);
+    if (!addr) return;
+    let off = false;
+    const get = () => backend.teamStats(addr).then((x) => !off && x && setT(x), () => {});
+    get();
+    const id = setInterval(get, 60_000);
+    return () => {
+      off = true;
+      clearInterval(id);
+    };
+  }, [backend, addr]);
+  return t;
+}
+
+function TeamCard({ snap, team }: { snap: Snapshot; team: TeamStats | null }) {
+  const ud = snap.usdtDecimals;
+  const pd = snap.popDecimals;
+  const v = (x: bigint | undefined, d: number) => (team && x !== undefined ? fmtUnits(x, d) : "—");
+  return (
+    <section className="card team">
+      <div className="team-h">团队累计入金</div>
+      <div className="kv">
+        <div><span>用 USDT 添加</span><b>{v(team?.usdtOnly, ud)} USDT</b></div>
+        <div><span>用 USDT + POP 添加</span><b><i className="nw">{v(team?.bothUsdt, ud)} USDT</i><i className="nw">+ {v(team?.bothPop, pd)} POP</i></b></div>
+        <div><span>合计（约）</span><b className="team-sum">{team ? fmtUnits(team.usdtOnly + team.bothValue, ud) : "—"} USDT</b></div>
+      </div>
+      <div className="team-h">团队当前质押</div>
+      <div className="kv">
+        <div><span>池子里现有</span><b><i className="nw">{v(team?.nowPop, pd)} POP</i><i className="nw">+ {v(team?.nowUsdt, ud)} USDT</i></b></div>
+        <div><span>约合</span><b className="team-sum">{v(team?.nowValueUsd, 18)} USDT</b></div>
+      </div>
+    </section>
+  );
+}
+
+/** admin: look up any wallet's team */
+function TeamLookup({ snap, backend }: { snap: Snapshot; backend: Backend }) {
+  const [input, setInput] = useState("");
+  const [addr, setAddr] = useState("");
+  const team = useTeam(backend, addr);
+  const ok = /^0x[0-9a-fA-F]{40}$/.test(input.trim());
+  return (
+    <section className="card">
+      <b>查询团队</b>
+      <p className="fine">输入任意钱包地址，查看他的直推、间推、团队总人数和团队入金。</p>
+      <div className="inp-row">
+        <input placeholder="钱包地址 0x…" value={input} onChange={(e) => setInput(e.target.value)} autoCapitalize="off" autoCorrect="off" spellCheck={false} />
+        <button className="btn-green sm" disabled={!ok} onClick={() => setAddr(input.trim())}>查询</button>
+      </div>
+      {addr && (
+        <>
+          <div className="counts team-counts">
+            <div><span>直推</span><b>{team ? team.direct : "—"}</b></div>
+            <div><span>间推</span><b>{team ? team.indirect : "—"}</b></div>
+            <div><span>团队总人数</span><b>{team ? team.team : "—"}</b></div>
+          </div>
+          <TeamCard snap={snap} team={team} />
+        </>
+      )}
+    </section>
   );
 }
 
@@ -560,6 +627,7 @@ function ReferPage({ cfg, snap, live, account, backend, onConnect, toast }: { cf
   const thr = snap.params.thresholdUsd;
   const gap = u ? thr - u.valueUsd : thr;
   const effective = list ? [...list.direct, ...list.indirect].filter((d) => d.eligible).length : null;
+  const team = useTeam(backend, account);
   const rows = list ? (tab === "direct" ? list.direct : list.indirect) : [];
   return (
     <>
@@ -603,15 +671,16 @@ function ReferPage({ cfg, snap, live, account, backend, onConnect, toast }: { cf
           <b>{u?.indirect ?? 0}</b>
         </div>
         <div>
-          <span>总人数</span>
-          <b>{(u?.direct ?? 0) + (u?.indirect ?? 0)}</b>
+          <span>团队总人数</span>
+          <b>{team ? team.team : "—"}</b>
         </div>
         <div>
           <span>当前有效</span>
           <b>{effective ?? "—"}</b>
         </div>
       </section>
-      <p className="fine pad">人数按实际入金过的独立钱包统计，重复入金不重复计数；一个钱包不等于一个真实自然人。有效 = 当前LP参考价值 ≥ {usd0(thr)} USDT。</p>
+      <p className="fine pad">人数只算添加过流动性的钱包，重复添加不重复计数；团队总人数包括你下面所有层级，不含你自己。有效 = 当前LP参考价值 ≥ {usd0(thr)} USDT。</p>
+      <TeamCard snap={snap} team={team} />
 
       <section className="card reward dyn">
         <div className="reward-top">
@@ -1426,6 +1495,7 @@ function AdminPage({ cfg, snap, backend, demo, isAdmin, refresh }: { cfg: AppCon
         </div>
       </section>
 
+      <TeamLookup snap={snap} backend={backend} />
       <AdminData cfg={cfg} snap={snap} backend={backend} />
 
       <section className="card list">

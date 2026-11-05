@@ -1,6 +1,6 @@
 // DEMO backend: consistent mock data for previewing the UI. Every screen shows a "演示数据" banner in this mode.
 // Nothing here is read from or sent to any chain.
-import type { AddQuote, AdminEvent, AdminUserRow, Downline, ExitQuote, Rec, RecKind, Snapshot, Step } from "./types";
+import type { AddQuote, AdminEvent, AdminUserRow, Downline, ExitQuote, Rec, RecKind, Snapshot, Step, TeamStats } from "./types";
 import { DEFAULT_PARAMS } from "./types";
 import type { OnSteps } from "./chain";
 import { applySlippage, E18 } from "./fmt";
@@ -183,6 +183,14 @@ export class DemoBackend {
       { kind, title: "动态奖励 · 第二档 5%", sign: "+", lines: [{ label: "来源", value: "0x4F9E…3C77" }, { label: "入账额度", value: "0.2600 USDT 计价（领取时换算喜羊羊）" }], time: t - 3600 * 9, tx, status: "已完成" },
     ];
     return { items: kind === "liquidity" ? L : kind === "claim" ? C : D, nextTo: null };
+  }
+
+  async teamStats(_addr: string): Promise<TeamStats | null> {
+    return {
+      direct: 12, indirect: 28, team: 156,
+      usdtOnly: 61_200n * E18, bothUsdt: 12_650n * E18, bothPop: 75_900_000n * E18, bothValue: 25_300n * E18,
+      nowPop: 216_900_000n * E18, nowUsdt: 36_150n * E18, nowValueUsd: 72_300n * E18,
+    };
   }
 
   async isJoined(_addr: string): Promise<boolean> {

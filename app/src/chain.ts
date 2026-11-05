@@ -4,7 +4,7 @@
 import * as E from "./vendor/ethers.min.js";
 import { MINER_ABI, ERC20_ABI, POOL_ABI, PAIR_ABI } from "./abi";
 import type { AppConfig } from "./config";
-import type { AddQuote, AdminEvent, AdminUserRow, Downline, ExitQuote, Params, Rec, RecKind, Snapshot, Step } from "./types";
+import type { AddQuote, AdminEvent, AdminUserRow, Downline, ExitQuote, Params, Rec, RecKind, Snapshot, Step, TeamStats } from "./types";
 import { DEFAULT_PARAMS } from "./types";
 import { amountsForLiquidity, liquidityForAmounts, pairedAmount } from "./v3math";
 import { applySlippage, E18, fmtUnits, short } from "./fmt";
@@ -545,6 +545,28 @@ export class ChainBackend {
       if (this.minerRpc === this.miner) throw e;
       return await this.minerRpc.queryFilter(filter, start, end);
     }
+  }
+
+  /** team statistics, worked out by the automatic check service from the chain's records (same website) */
+  async teamStats(addr: string): Promise<TeamStats | null> {
+    const r = await fetch(`./keeper/team.json?u=${addr}`, { cache: "no-store" });
+    if (!r.ok) return null;
+    const j = await r.json();
+    if (!j || !j.ok) return null;
+    const liq = BigInt(j.liquidity || "0");
+    const [amts, vpr] = await Promise.all([liq > 0n ? this.positionAmounts(liq) : Promise.resolve([0n, 0n] as [bigint, bigint]), this.miner.valuePerRef()]);
+    return {
+      direct: Number(j.direct),
+      indirect: Number(j.indirect),
+      team: Number(j.team),
+      usdtOnly: BigInt(j.usdtOnly || "0"),
+      bothUsdt: BigInt(j.bothUsdt || "0"),
+      bothPop: BigInt(j.bothPop || "0"),
+      bothValue: BigInt(j.bothValue || "0"),
+      nowPop: amts[0],
+      nowUsdt: amts[1],
+      nowValueUsd: (liq * BigInt(vpr)) / L_REF,
+    };
   }
 
   /** has this wallet deposited before (only such wallets can be referrers) */
