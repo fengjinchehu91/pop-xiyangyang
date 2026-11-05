@@ -1,0 +1,8 @@
+{
+  "name": "pop-xiyangyang",
+  "private": true,
+  "description": "喜羊羊矿场：网站 + 自动检查服务（Cloudflare Workers）",
+  "devDependencies": {
+    "wrangler": "^4.45.0"
+  }
+}

@@ -319,6 +319,23 @@ var getRecoveryBit = (x, y, r) => (x === r ? 0 : 2) | Number(y & 1n);
 var getPublicKey = (privKey, isCompressed = true) => {
   return G.multiply(secretKeyToScalar(privKey)).toBytes(isCompressed);
 };
+var isValidSecretKey = (secretKey) => {
+  try {
+    return !!secretKeyToScalar(secretKey);
+  } catch (error) {
+    return false;
+  }
+};
+var isValidPublicKey = (publicKey, isCompressed) => {
+  try {
+    const l = publicKey.length;
+    if (isCompressed === true && l !== 33) return false;
+    if (isCompressed === false && l !== 65) return false;
+    return !!Point.fromBytes(publicKey);
+  } catch (error) {
+    return false;
+  }
+};
 var assertRecoveryBit = (recovery) => {
   if (recovery != null && [0, 1, 2, 3].includes(recovery)) return recovery;
   throw new Error("invalid recovery id");
@@ -479,6 +496,18 @@ var sign = (message, secretKey, opts = {}) => {
   const msg = prepMsg(message, o[1], false);
   return _sign(msg, secretKey, o, hmacDrbg);
 };
+var randomSecretKey = (seed) => {
+  seed = seed === void 0 ? randomBytes(48) : seed;
+  abytes(seed);
+  if (seed.length < 48 || seed.length > 1024) throw new RangeError("expected 48-1024b");
+  const num = M(bytesToNumBE(seed), N - 1n);
+  return numTo32b(num + 1n);
+};
+var utils = /* @__PURE__ */ freeze({
+  isValidSecretKey,
+  isValidPublicKey,
+  randomSecretKey
+});
 var precompute = () => {
   const points = [];
   let p = G;
@@ -1247,6 +1276,7 @@ var DEFAULTS = {
   CONFIRMATIONS: 5
 };
 var SUBREQUEST_BUDGET = 45;
+var KEY_SLOT = "keeper-key";
 var REASONS = [
   [1, "\u7BA1\u7406\u5458\u5DF2\u6682\u505C"],
   [2, "\u6D41\u52A8\u6027\u4F30\u503C\u6682\u4E0D\u53EF\u7528\uFF08\u4EF7\u683C\u5386\u53F2\u4E0D\u8DB3\u3001\u504F\u79BB\u8FC7\u5927\u6216\u6D41\u52A8\u6027\u4E0D\u8DB3\uFF09"],
@@ -1476,20 +1506,39 @@ function applyLog(users, l) {
 }
 var settleList = (s) => Object.keys(s.users).filter((a) => s.users[a][1] === 1 && s.users[a][0] !== "0");
 var cachedKey = null;
-function keyFromEnv(env) {
-  const str = String(env.KEEPER_KEY || "").trim();
+function keyFromString(str, what) {
+  str = String(str).trim();
   if (cachedKey && cachedKey.str === str) return cachedKey;
-  if (!str) throw new Error("\u8FD8\u6CA1\u6709\u8BBE\u7F6E KEEPER_KEY\uFF08\u68C0\u67E5\u94B1\u5305\u7684\u79C1\u94A5\uFF09");
-  if (!/^(0x)?[0-9a-fA-F]{64}$/.test(str)) throw new Error("KEEPER_KEY \u683C\u5F0F\u4E0D\u5BF9\uFF1A\u5E94\u8BE5\u662F 64 \u4F4D\u5341\u516D\u8FDB\u5236\u79C1\u94A5");
+  if (!/^(0x)?[0-9a-fA-F]{64}$/.test(str)) throw new Error(`${what}\u683C\u5F0F\u4E0D\u5BF9\uFF1A\u5E94\u8BE5\u662F 64 \u4F4D\u5341\u516D\u8FDB\u5236\u79C1\u94A5`);
   const key = fromHex(str);
   let addr;
   try {
     addr = addressOf(key);
   } catch {
-    throw new Error("KEEPER_KEY \u4E0D\u662F\u6709\u6548\u7684\u79C1\u94A5");
+    throw new Error(`${what}\u4E0D\u662F\u6709\u6548\u7684\u79C1\u94A5`);
   }
   cachedKey = { str, key, addr };
   return cachedKey;
+}
+async function resolveKey(env, loaded, s) {
+  if (env.KEEPER_KEY) return keyFromString(env.KEEPER_KEY, "KEEPER_KEY ");
+  if (!loaded.ok) throw new Error(loaded.why + "\uFF0C\u65E0\u6CD5\u8BFB\u53D6\u68C0\u67E5\u94B1\u5305");
+  let stored;
+  try {
+    stored = await env.STATE.get(KEY_SLOT);
+  } catch (e) {
+    throw new Error("\u8BFB\u53D6\u68C0\u67E5\u94B1\u5305\u5931\u8D25\uFF1A" + (e?.message || e));
+  }
+  if (stored) return keyFromString(stored, "\u4FDD\u5B58\u7684\u68C0\u67E5\u94B1\u5305");
+  if (s.generatedAddr) {
+    throw new Error("\u627E\u4E0D\u5230\u4E4B\u524D\u521B\u5EFA\u7684\u68C0\u67E5\u94B1\u5305\u5BC6\u94A5\u3002\u4E3A\u4E86\u4E0D\u4E22\u5931\u91CC\u9762\u7684 BNB\uFF0C\u5DF2\u505C\u6B62\u8FD0\u884C\uFF0C\u8BF7\u8054\u7CFB\u5F00\u53D1\u8005\u5904\u7406\u3002");
+  }
+  const hex = toHex(utils.randomSecretKey());
+  await env.STATE.put(KEY_SLOT, hex);
+  const k = keyFromString(hex, "\u65B0\u5EFA\u7684\u68C0\u67E5\u94B1\u5305");
+  s.generatedAddr = k.addr;
+  s.generatedAt = Math.floor(Date.now() / 1e3);
+  return k;
 }
 var label = (k) => k === "settle" ? "\u7ED3\u7B97" : "\u68C0\u67E5";
 var autoSettleHours = (n) => Math.min(24, Math.max(1, n / 20));
@@ -1531,8 +1580,9 @@ async function runOnce(env) {
     }
   };
   try {
-    const { key, addr: me } = keyFromEnv(env);
+    const { key, addr: me } = await resolveKey(env, loaded, s);
     st.keeper = me;
+    s.keeperAddr = me;
     const ethCall = (data, from) => ["eth_call", [from ? { from, to: c.miner, data } : { to: c.miner, data }, "latest"]];
     const r = await rpc.batch([
       ["eth_chainId", []],
@@ -1600,7 +1650,7 @@ async function runOnce(env) {
         }
         const gas = big2(est[i].result) * 13n / 10n + 15000n;
         if (gas * gasPrice > spendable) {
-          st.errors.push("\u68C0\u67E5\u94B1\u5305\u7684 BNB \u4E0D\u591F\u4ED8\u624B\u7EED\u8D39\uFF0C\u8BF7\u5F80\u68C0\u67E5\u94B1\u5305\u91CC\u8F6C\u4E00\u70B9 BNB");
+          st.errors.push(`\u68C0\u67E5\u94B1\u5305\u7684 BNB \u4E0D\u591F\u4ED8\u624B\u7EED\u8D39\uFF0C\u8BF7\u5F80 ${me} \u8F6C 0.05 BNB`);
           break;
         }
         spendable -= gas * gasPrice;
@@ -1764,8 +1814,9 @@ function statusPage(s, env) {
   const row = (k, v) => rows.push(`<div class="row"><span>${esc(k)}</span><b>${v}</b></div>`);
   let pill = ["wait", "\u8FD8\u6CA1\u6709\u8FD0\u884C\u8FC7"];
   const hints = [];
-  if (!env.KEEPER_KEY) hints.push("\u8FD8\u6CA1\u6709\u8BBE\u7F6E\u5BC6\u94A5 KEEPER_KEY\uFF08\u8BBE\u7F6E \u2192 \u53D8\u91CF\u548C\u673A\u5BC6 \u2192 \u6DFB\u52A0 \u2192 \u7C7B\u578B\u9009\u201C\u5BC6\u94A5\u201D\uFF09\u3002");
-  if (!env.STATE) hints.push("\u8FD8\u6CA1\u6709\u7ED1\u5B9A KV \u5B58\u50A8\uFF0C\u53D8\u91CF\u540D\u5FC5\u987B\u662F STATE\uFF08\u8BBE\u7F6E \u2192 \u7ED1\u5B9A \u2192 \u6DFB\u52A0 \u2192 KV \u547D\u540D\u7A7A\u95F4\uFF09\u3002");
+  if (!env.STATE) hints.push("\u8FD8\u6CA1\u6709\u7ED1\u5B9A KV \u5B58\u50A8\uFF0C\u53D8\u91CF\u540D\u5FC5\u987B\u662F STATE\u3002");
+  if (st?.keeper && st.balance !== null && BigInt(st.balance) < 5n * 10n ** 15n)
+    hints.push(`\u8BF7\u5F80\u68C0\u67E5\u94B1\u5305 ${st.keeper} \u8F6C 0.05 BNB \u4F5C\u4E3A\u624B\u7EED\u8D39\uFF08\u53EA\u80FD\u8F6C BSC \u94FE\u4E0A\u7684 BNB\uFF09\uFF0C\u8F6C\u5165\u540E 10 \u5206\u949F\u5185\u81EA\u52A8\u5F00\u59CB\u5DE5\u4F5C\u3002`);
   if (st) {
     const fresh = nowS - st.at < 30 * 60;
     pill = st.ok && fresh ? ["ok", "\u6B63\u5E38\u8FD0\u884C"] : fresh ? ["warn", "\u6709\u95EE\u9898\uFF0C\u89C1\u4E0B\u65B9"] : ["warn", "\u8D85\u8FC7 30 \u5206\u949F\u6CA1\u6709\u8FD0\u884C"];
@@ -1809,7 +1860,7 @@ i{font-style:normal}.g{color:#127a39}.r{color:#c0392b}.hint{background:#fff7e6;b
 a{color:#1769aa}.foot{font-size:13px;color:#6b7c72;margin-top:14px}</style></head><body><div class="w">
 <h1>\u559C\u7F8A\u7F8A\u77FF\u573A \xB7 \u81EA\u52A8\u68C0\u67E5\u670D\u52A1</h1><div class="pill ${pill[0]}">${pill[1]}</div>
 ${hints.map((h) => `<div class="hint">${esc(h)}</div>`).join("")}
-<div class="card">${rows.join("") || '<div class="row"><b>\u8BBE\u7F6E\u597D\u4EE5\u540E\uFF0C\u6700\u591A\u7B49 10 \u5206\u949F\u5C31\u4F1A\u663E\u793A\u7B2C\u4E00\u6B21\u8FD0\u884C\u7ED3\u679C\u3002</b></div>'}</div>
+<div class="card">${rows.join("") || '<div class="row"><b>\u7B2C\u4E00\u6B21\u8FD0\u884C\u4F1A\u81EA\u52A8\u521B\u5EFA\u68C0\u67E5\u94B1\u5305\uFF0C\u6700\u591A\u7B49 10 \u5206\u949F\u5C31\u4F1A\u663E\u793A\u7ED3\u679C\u3002</b></div>'}</div>
 <p class="foot">\u8FD9\u4E2A\u9875\u9762\u53EA\u663E\u793A\u72B6\u6001\uFF0C\u4E0D\u80FD\u64CD\u4F5C\u4EFB\u4F55\u4E1C\u897F\u3002\u6BCF 10 \u5206\u949F\u81EA\u52A8\u8FD0\u884C\u4E00\u6B21\u3002</p></div></body></html>`;
 }
 {
@@ -1829,6 +1880,28 @@ ${hints.map((h) => `<div class="hint">${esc(h)}</div>`).join("")}
   JSON.parse(JSON.stringify(users));
   settleList({ users });
 }
+function statusJson(s) {
+  const st = s?.status || null;
+  return {
+    ran: !!st,
+    at: st?.at ?? null,
+    ok: st?.ok ?? false,
+    okAt: s?.okAt ?? null,
+    accruing: st?.accruing ?? null,
+    reasons: st?.reasons ?? null,
+    lastCheckpoint: st?.lastCheckpoint ?? null,
+    keeper: st?.keeper || s?.keeperAddr || null,
+    balance: st?.balance ?? null,
+    lowBalance: st?.balance != null ? BigInt(st.balance) < 5n * 10n ** 15n : null,
+    daysLeft: s ? daysLeft(s) : null,
+    users: st?.users ?? 0,
+    toSettle: st?.toSettle ?? 0,
+    settleHours: st?.settleHours ?? null,
+    lastSettle: s?.lastSettleTx?.at ?? null,
+    actions: st?.actions ?? [],
+    errors: st?.errors ?? []
+  };
+}
 var pageMemo = { t: 0, s: null };
 var worker_default = {
   async scheduled(event, env, ctx) {
@@ -1836,7 +1909,8 @@ var worker_default = {
   },
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (url.pathname !== "/") return new Response("Not found", { status: 404 });
+    const p = url.pathname.replace(/\/+$/, "") || "/";
+    if (p !== "/" && p !== "/keeper" && p !== "/keeper.json") return new Response("Not found", { status: 404 });
     let s = pageMemo.s;
     if (Date.now() - pageMemo.t > 2e4) {
       try {
@@ -1845,6 +1919,11 @@ var worker_default = {
         s = null;
       }
       if (s) pageMemo = { t: Date.now(), s };
+    }
+    if (p === "/keeper.json") {
+      return new Response(JSON.stringify(statusJson(s)), {
+        headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }
+      });
     }
     return new Response(statusPage(s, env), {
       headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }

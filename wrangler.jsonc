@@ -1,8 +1,17 @@
-// Cloudflare 部署设置：告诉 Cloudflare 网站文件在 site 文件夹里
+// Cloudflare 部署设置（同一个 Worker 里既有网站，又有自动检查服务）
+//   site/                       网站文件（index.html、config.json、deploy.html）
+//   keeper-cf/dist/worker.js    自动检查服务：每 10 分钟运行一次；状态页在 /keeper
 {
   "name": "pop-xiyangyang",
+  "main": "keeper-cf/dist/worker.js",
   "compatibility_date": "2026-09-01",
   "assets": {
     "directory": "./site"
-  }
+  },
+  "triggers": {
+    "crons": ["*/10 * * * *"]
+  },
+  // 自动检查服务的存储（检查钱包、用户列表、运行状态）；第一次部署时 Cloudflare 自动创建
+  "kv_namespaces": [{ "binding": "STATE" }],
+  "observability": { "enabled": true }
 }

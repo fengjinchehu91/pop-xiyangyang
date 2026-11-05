@@ -1014,6 +1014,64 @@ function RulesSheet({ snap, close }: { snap: Snapshot | null; close: () => void 
 // =====================================================================================================
 type AdminTab = "users" | "daily" | "refs" | "flows";
 
+// status of the automatic check service, served by the same Cloudflare Worker as this page (/keeper.json)
+type KeeperStatus = {
+  ran: boolean; at: number | null; ok: boolean; accruing: boolean | null; keeper: string | null; balance: string | null;
+  lowBalance: boolean | null; daysLeft: number | null; users: number; toSettle: number; settleHours: number | null;
+  lastSettle: number | null; lastCheckpoint: number | null; errors: string[];
+};
+function KeeperCard({ cfg }: { cfg: AppConfig }) {
+  const [k, setK] = useState<KeeperStatus | null>(null);
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    const load = () =>
+      fetch("./keeper.json", { cache: "no-store" })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((j) => alive && setK(j && typeof j.ran === "boolean" ? j : null))
+        .catch(() => alive && setK(null));
+    load();
+    const t = setInterval(load, 60_000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, []);
+  if (!k) return null; // page not served by the Worker (e.g. opened as a local file)
+  const now = Date.now() / 1000;
+  const fresh = !!k.at && now - k.at < 30 * 60;
+  const bnb = k.balance !== null ? Number(BigInt(k.balance) / 10n ** 12n) / 1e6 : null;
+  const state = !k.ran ? ["wait", "还没开始运行（最多等 10 分钟）"] : k.lowBalance ? ["warn", "等待充值手续费"] : k.ok && fresh ? ["ok", "正常运行，每 10 分钟自动检查"] : ["warn", fresh ? "有问题，见下方" : "超过 30 分钟没有运行"];
+  return (
+    <section className="card kv">
+      <b>自动检查服务</b>
+      <div><span>状态</span><b className={state[0] === "ok" ? "ok-txt" : ""}>{state[1]}</b></div>
+      {k.keeper && (
+        <div>
+          <span>检查钱包（付手续费用）</span>
+          <b className="mono">
+            {short(k.keeper)}{" "}
+            <button className="btn-mini" onClick={() => navigator.clipboard?.writeText(k.keeper!).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); })}>
+              {copied ? "已复制" : "复制"}
+            </button>
+          </b>
+        </div>
+      )}
+      {bnb !== null && <div><span>检查钱包余额</span><b>{bnb.toFixed(4)} BNB{k.daysLeft !== null ? `，约还能用 ${Math.floor(k.daysLeft)} 天` : ""}</b></div>}
+      {k.at && <div><span>最近一次运行</span><b>{fmtTime(k.at)}</b></div>}
+      <div><span>推荐奖励自动结算</span><b>{k.lastSettle ? `最近 ${fmtTime(k.lastSettle)}` : "还没有需要结算的"}{k.settleHours ? ` · 约每 ${Math.round(k.settleHours * 10) / 10} 小时` : ""}</b></div>
+      {k.lowBalance && k.keeper && (
+        <div className="alert warn">
+          请用任意钱包往下面这个检查钱包地址转 <b className="nowrap">0.05 BNB</b>（BSC 链），转入后 10 分钟内自动开始工作。这个钱包只用来付检查的手续费，没有任何其他权限。
+          <span className="addr-full mono">{k.keeper}</span>
+        </div>
+      )}
+      {!k.lowBalance && k.errors.length > 0 && <div className="alert warn">{k.errors.join("；")}</div>}
+      <p className="fine">自动检查服务会定时更新价格、在储备不足时暂停、补足后恢复，并给推荐人结算奖励，不需要手动操作。<a href={`${cfg.explorer}/address/${k.keeper ?? ""}`} target="_blank" rel="noreferrer">在区块浏览器查看 ↗</a></p>
+    </section>
+  );
+}
+
 function AdminPage({ cfg, snap, backend, demo, isAdmin, refresh }: { cfg: AppConfig; snap: Snapshot; backend: Backend; demo: boolean; isAdmin: boolean; refresh: () => void }) {
   const can = isAdmin || demo;
   const pr = snap.params;
@@ -1095,9 +1153,10 @@ function AdminPage({ cfg, snap, backend, demo, isAdmin, refresh }: { cfg: AppCon
       <p className="fine pad">估算可支撑时间 =（可用额度折算 USDT − 已累计待支付）÷ 当前每日总发放；喜羊羊价格和平台规模变化都会改变这个数字。</p>
       <StatusLine snap={snap} />
 
+      <KeeperCard cfg={cfg} />
+
       <section className="card btn-col">
         <b>运行控制</b>
-        <button className="btn-line wide" disabled={!can} onClick={() => act("checkpoint", "立即执行链上检查")}>立即检查（任何人可调用）</button>
         {snap.adminPaused ? (
           <button className="btn-green wide" disabled={!can || pr.ended} onClick={() => act("resume", "恢复新增入金与计息")}>恢复新增入金与计息</button>
         ) : (

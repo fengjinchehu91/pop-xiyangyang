@@ -239,3 +239,8 @@ a { color: var(--g6); }
 .tap-li { cursor: pointer; }
 .sub-list { padding: 4px 0 8px 14px; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
 .inp em.hint { display: block; margin-top: 6px; font-style: normal; font-size: 13px; color: var(--g6); }
+.kv > .alert { display: block; margin: 8px 0 0; border: 0; padding: 10px 12px; }
+.kv > .alert b { text-align: left; }
+.kv > .alert .nowrap { white-space: nowrap; word-break: normal; }
+.kv > .alert .addr-full { display: block; margin-top: 8px; color: var(--ink, #17301f); word-break: break-all; font-size: 13px; user-select: all; }
+.ok-txt { color: var(--green, #127a39); }

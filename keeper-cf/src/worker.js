@@ -11,8 +11,9 @@
 // cannot move anyone's funds. It only needs a little BNB for gas. Use a brand-new wallet for it — never the
 // operator / admin wallet (this program refuses to run with those keys).
 //
-// Required:   secret KEEPER_KEY (private key of the new keeper wallet), KV binding STATE.
-// Optional:   RPC_URL, RPC_URL_2, MINER, DEPLOY_BLOCK, CHECK_MINUTES, SETTLE_HOURS, MAX_GAS_GWEI.
+// Required:   KV binding STATE. The keeper wallet is created by the Worker itself on its first run and kept in KV
+//             (or set a secret KEEPER_KEY to use your own). Fund the shown address with a little BNB.
+// Optional:   KEEPER_KEY, RPC_URL, RPC_URL_2, MINER, DEPLOY_BLOCK, CHECK_MINUTES, SETTLE_HOURS, MAX_GAS_GWEI.
 //
 // Crypto: noble-secp256k1 + noble-hashes (MIT, audited, vendored unchanged).
 
@@ -41,7 +42,8 @@ const DEFAULTS = {
   MAX_GAS_GWEI: 1, // never pay more than this per gas
   CONFIRMATIONS: 5,
 };
-const SUBREQUEST_BUDGET = 45; // Workers Free allows 50 outgoing requests per run
+const SUBREQUEST_BUDGET = 45;
+const KEY_SLOT = "keeper-key"; // KV entry holding the self-created keeper wallet (never returned by any page) // Workers Free allows 50 outgoing requests per run
 
 const REASONS = [
   [1, "管理员已暂停"],
@@ -294,22 +296,44 @@ const settleList = (s) => Object.keys(s.users).filter((a) => s.users[a][1] === 1
 
 // ------------------------------------------------------------------ one scheduled run
 
-let cachedKey = null; // { str, key, addr } kept in memory of this isolate only, never stored or shown
+let cachedKey = null; // { str, key, addr } kept in memory of this isolate only, never shown anywhere
 
-function keyFromEnv(env) {
-  const str = String(env.KEEPER_KEY || "").trim();
+function keyFromString(str, what) {
+  str = String(str).trim();
   if (cachedKey && cachedKey.str === str) return cachedKey;
-  if (!str) throw new Error("还没有设置 KEEPER_KEY（检查钱包的私钥）");
-  if (!/^(0x)?[0-9a-fA-F]{64}$/.test(str)) throw new Error("KEEPER_KEY 格式不对：应该是 64 位十六进制私钥");
+  if (!/^(0x)?[0-9a-fA-F]{64}$/.test(str)) throw new Error(`${what}格式不对：应该是 64 位十六进制私钥`);
   const key = fromHex(str);
   let addr;
   try {
     addr = addressOf(key);
   } catch {
-    throw new Error("KEEPER_KEY 不是有效的私钥");
+    throw new Error(`${what}不是有效的私钥`);
   }
   cachedKey = { str, key, addr };
   return cachedKey;
+}
+
+/** The keeper wallet: the secret KEEPER_KEY if one is set; otherwise a wallet this Worker created for itself on its
+ * first run and keeps in its own KV store (nobody has to create, copy or paste a private key). */
+async function resolveKey(env, loaded, s) {
+  if (env.KEEPER_KEY) return keyFromString(env.KEEPER_KEY, "KEEPER_KEY ");
+  if (!loaded.ok) throw new Error(loaded.why + "，无法读取检查钱包");
+  let stored;
+  try {
+    stored = await env.STATE.get(KEY_SLOT);
+  } catch (e) {
+    throw new Error("读取检查钱包失败：" + (e?.message || e)); // never create a second wallet after a failed read
+  }
+  if (stored) return keyFromString(stored, "保存的检查钱包");
+  if (s.generatedAddr) {
+    throw new Error("找不到之前创建的检查钱包密钥。为了不丢失里面的 BNB，已停止运行，请联系开发者处理。");
+  }
+  const hex = toHex(secp.utils.randomSecretKey());
+  await env.STATE.put(KEY_SLOT, hex);
+  const k = keyFromString(hex, "新建的检查钱包");
+  s.generatedAddr = k.addr;
+  s.generatedAt = Math.floor(Date.now() / 1000);
+  return k;
 }
 
 const label = (k) => (k === "settle" ? "结算" : "检查");
@@ -356,8 +380,9 @@ export async function runOnce(env) {
   };
 
   try {
-    const { key, addr: me } = keyFromEnv(env);
+    const { key, addr: me } = await resolveKey(env, loaded, s);
     st.keeper = me;
+    s.keeperAddr = me;
 
     // ---- 1. one batched read
     const ethCall = (data, from) => ["eth_call", [from ? { from, to: c.miner, data } : { to: c.miner, data }, "latest"]];
@@ -433,7 +458,7 @@ export async function runOnce(env) {
         }
         const gas = (big(est[i].result) * 13n) / 10n + 15000n;
         if (gas * gasPrice > spendable) {
-          st.errors.push("检查钱包的 BNB 不够付手续费，请往检查钱包里转一点 BNB");
+          st.errors.push(`检查钱包的 BNB 不够付手续费，请往 ${me} 转 0.05 BNB`);
           break;
         }
         spendable -= gas * gasPrice;
@@ -613,8 +638,9 @@ export function statusPage(s, env) {
   const row = (k, v) => rows.push(`<div class="row"><span>${esc(k)}</span><b>${v}</b></div>`);
   let pill = ["wait", "还没有运行过"];
   const hints = [];
-  if (!env.KEEPER_KEY) hints.push("还没有设置密钥 KEEPER_KEY（设置 → 变量和机密 → 添加 → 类型选“密钥”）。");
-  if (!env.STATE) hints.push("还没有绑定 KV 存储，变量名必须是 STATE（设置 → 绑定 → 添加 → KV 命名空间）。");
+  if (!env.STATE) hints.push("还没有绑定 KV 存储，变量名必须是 STATE。");
+  if (st?.keeper && st.balance !== null && BigInt(st.balance) < 5n * 10n ** 15n)
+    hints.push(`请往检查钱包 ${st.keeper} 转 0.05 BNB 作为手续费（只能转 BSC 链上的 BNB），转入后 10 分钟内自动开始工作。`);
   if (st) {
     const fresh = nowS - st.at < 30 * 60;
     pill = st.ok && fresh ? ["ok", "正常运行"] : fresh ? ["warn", "有问题，见下方"] : ["warn", "超过 30 分钟没有运行"];
@@ -662,7 +688,7 @@ i{font-style:normal}.g{color:#127a39}.r{color:#c0392b}.hint{background:#fff7e6;b
 a{color:#1769aa}.foot{font-size:13px;color:#6b7c72;margin-top:14px}</style></head><body><div class="w">
 <h1>喜羊羊矿场 · 自动检查服务</h1><div class="pill ${pill[0]}">${pill[1]}</div>
 ${hints.map((h) => `<div class="hint">${esc(h)}</div>`).join("")}
-<div class="card">${rows.join("") || '<div class="row"><b>设置好以后，最多等 10 分钟就会显示第一次运行结果。</b></div>'}</div>
+<div class="card">${rows.join("") || '<div class="row"><b>第一次运行会自动创建检查钱包，最多等 10 分钟就会显示结果。</b></div>'}</div>
 <p class="foot">这个页面只显示状态，不能操作任何东西。每 10 分钟自动运行一次。</p></div></body></html>`;
 }
 
@@ -688,6 +714,29 @@ ${hints.map((h) => `<div class="hint">${esc(h)}</div>`).join("")}
   settleList({ users });
 }
 
+export function statusJson(s) {
+  const st = s?.status || null;
+  return {
+    ran: !!st,
+    at: st?.at ?? null,
+    ok: st?.ok ?? false,
+    okAt: s?.okAt ?? null,
+    accruing: st?.accruing ?? null,
+    reasons: st?.reasons ?? null,
+    lastCheckpoint: st?.lastCheckpoint ?? null,
+    keeper: st?.keeper || s?.keeperAddr || null,
+    balance: st?.balance ?? null,
+    lowBalance: st?.balance != null ? BigInt(st.balance) < 5n * 10n ** 15n : null,
+    daysLeft: s ? daysLeft(s) : null,
+    users: st?.users ?? 0,
+    toSettle: st?.toSettle ?? 0,
+    settleHours: st?.settleHours ?? null,
+    lastSettle: s?.lastSettleTx?.at ?? null,
+    actions: st?.actions ?? [],
+    errors: st?.errors ?? [],
+  };
+}
+
 let pageMemo = { t: 0, s: null };
 
 export default {
@@ -696,7 +745,9 @@ export default {
   },
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (url.pathname !== "/") return new Response("Not found", { status: 404 });
+    // "/" only reaches this code when the Worker runs without the website files next to it
+    const p = url.pathname.replace(/\/+$/, "") || "/";
+    if (p !== "/" && p !== "/keeper" && p !== "/keeper.json") return new Response("Not found", { status: 404 });
     let s = pageMemo.s;
     if (Date.now() - pageMemo.t > 20000) {
       try {
@@ -705,6 +756,11 @@ export default {
         s = null;
       }
       if (s) pageMemo = { t: Date.now(), s }; // remember only real data (setup in progress: always re-read)
+    }
+    if (p === "/keeper.json") {
+      return new Response(JSON.stringify(statusJson(s)), {
+        headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+      });
     }
     return new Response(statusPage(s, env), {
       headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
