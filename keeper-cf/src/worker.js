@@ -846,10 +846,10 @@ async function verifyContract(url) {
 // TEMPORARY read-only diagnosis of the price checks (remove afterwards)
 async function diag(env) {
   const c = config(env);
-  const rpc = new Rpc(c.rpcs, 6);
+  const rpc = new Rpc(c.rpcs, 40);
   const call = (to, sig, args = "") => ["eth_call", [{ to, data: "0x" + selector(sig) + args }, "latest"]];
   const m = c.miner;
-  const names = ["POOL()", "REWARD_POOL()", "REWARD_V2()", "REWARD_VIA_POP()", "TWAP_WINDOW()", "MAX_VALUATION_AGE()", "minPoolLiquidity()", "minRewardPoolLiquidity()", "maxTickDeviation()", "obsCount()", "obsNext()", "lastValuationTime()", "valuePerRef()", "rewardPriceView()", "pauseReasons()", "accruing()", "lastCheckpointTime()", "TOKEN0()", "POP()", "USDT()", "REWARD()"];
+  const names = ["POOL()", "REWARD_POOL()", "TWAP_WINDOW()", "rewardPriceView()", "pauseReasons()", "accruing()", "lastValuationTime()"];
   const r1 = await rpc.batch([["eth_getBlockByNumber", ["latest", false]], ...names.map((n) => call(m, n))]);
   const out = { now: Number(r1[0].result?.timestamp), miner: {} };
   names.forEach((n, i) => (out.miner[n] = r1[i + 1].result ?? r1[i + 1].error?.message));
@@ -857,12 +857,10 @@ async function diag(env) {
   const rp = "0x" + String(out.miner["REWARD_POOL()"]).slice(-40);
   const tw = Number(big(out.miner["TWAP_WINDOW()"]));
   const obsArgs = word(32) + word(2) + word(tw) + word(0);
-  const q = [
-    call(pool, "slot0()"), call(pool, "liquidity()"), call(pool, "observe(uint32[])", obsArgs), call(pool, "token0()"), call(pool, "token1()"), call(pool, "fee()"),
-    call(rp, "getReserves()"), call(rp, "token0()"), call(rp, "token1()"), call(rp, "price0CumulativeLast()"), call(rp, "price1CumulativeLast()"),
-  ];
+  void rp;
+  const q = [call(pool, "slot0()"), call(pool, "observe(uint32[])", obsArgs)];
   const r2 = await rpc.batch(q);
-  const keys = ["slot0", "liquidity", "observe", "token0", "token1", "fee", "rp.getReserves", "rp.token0", "rp.token1", "rp.p0cum", "rp.p1cum"];
+  const keys = ["slot0", "observe"];
   out.pool = {};
   keys.forEach((k, i) => (out.pool[k] = r2[i].result ?? "ERR " + (r2[i].error?.message || "") + " " + (r2[i].error?.data || "")));
   return out;
