@@ -3,6 +3,7 @@ export const MINER_ABI = [
   "function owner() view returns (address)",
   "function OPERATOR() view returns (address)",
   "function POOL() view returns (address)",
+  "function NPM() view returns (address)",
   "function POP() view returns (address)",
   "function USDT() view returns (address)",
   "function REWARD() view returns (address)",

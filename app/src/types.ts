@@ -13,6 +13,7 @@ export interface UserView {
   direct: number;
   indirect: number;
   firstDepositAt: number;
+  tokenId: bigint; // PancakeSwap V3 position NFT, held by the mining contract
 }
 
 export interface Params {
@@ -62,7 +63,7 @@ export interface Snapshot {
   reserve: { balance: bigint; allowance: bigint; usable: bigint; liabilityUsd: bigint } | null;
   user: UserView | null;
   balances: { usdt: bigint; pop: bigint; reward: bigint } | null;
-  addresses: { miner: string; pool: string; pop: string; usdt: string; reward: string; rewardPool: string };
+  addresses: { miner: string; pool: string; pop: string; usdt: string; reward: string; rewardPool: string; npm?: string };
   fetchedAt: number;
 }
 

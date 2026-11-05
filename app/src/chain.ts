@@ -26,7 +26,7 @@ export class ChainBackend {
   cfg: AppConfig;
   read: any;
   miner: any;
-  addr = { miner: "", pool: "", pop: "", usdt: "", reward: "", rewardPool: "" };
+  addr = { miner: "", pool: "", pop: "", usdt: "", reward: "", rewardPool: "", npm: "" };
   dec = { usdt: 18, pop: 18, reward: 18 };
   fee = 0;
   token0 = "";
@@ -92,7 +92,8 @@ export class ChainBackend {
         this.problem = "合约内的池子/代币地址与配置不一致，已禁止交易";
         return;
       }
-      this.addr = { miner: this.cfg.miner, pool, pop, usdt, reward, rewardPool };
+      const npm = String(await this.miner.NPM().catch(() => ""));
+      this.addr = { miner: this.cfg.miner, pool, pop, usdt, reward, rewardPool, npm };
       const t = (a: string) => new E.Contract(a, ERC20_ABI, this.read);
       const [du, dp, dr] = await Promise.all([t(usdt).decimals(), t(pop).decimals(), t(reward).decimals()]);
       this.dec = { usdt: Number(du), pop: Number(dp), reward: Number(dr) };
@@ -199,6 +200,7 @@ export class ChainBackend {
         direct: Number(u.directCount),
         indirect: Number(u.indirectCount),
         firstDepositAt: Number(u.firstDepositAt),
+        tokenId: BigInt(u.tokenId),
       };
       snap.balances = { usdt: bu, pop: bp, reward: br };
     }

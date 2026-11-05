@@ -55,6 +55,7 @@ export class DemoBackend {
         usdt: "0x55d398326f99059fF775485246999027B3197955",
         reward: "0x4dDA46C9dD7e794B99eebDcfD3c82bfBD3207777",
         rewardPool: "0x0000000000000000000000000000000000000000",
+        npm: "0x46A15B0b27311cedF172AB29E4f4766fbE7F4364",
       },
       fetchedAt: Date.now(),
     };
@@ -74,6 +75,7 @@ export class DemoBackend {
         direct: 12,
         indirect: 28,
         firstDepositAt: now() - 86400 * 20,
+        tokenId: 123456n,
       };
       s.balances = { usdt: 3_820n * E18, pop: 2_100_000n * E18, reward: 25_430n * E18 };
     }

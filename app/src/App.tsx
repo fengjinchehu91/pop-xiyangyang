@@ -359,6 +359,12 @@ function MinePage(props: {
                 ⊖ 退出流动性
               </button>
             </div>
+            {u && u.liquidity > 0n && u.tokenId > 0n && snap.addresses.npm && (
+              <p className="fine pos-id">
+                仓位编号 <b>#{u.tokenId.toString()}</b>：放在薄饼 POP/USDT 池里，由挖矿合约代为保管，只有你自己能退出。
+                <a href={`${cfg.explorer}/nft/${snap.addresses.npm}/${u.tokenId}`} target="_blank" rel="noreferrer">在区块浏览器查看这个仓位 ↗</a>
+              </p>
+            )}
             <p className="fine">参考价值按池子时间加权价格估算，不含待领取奖励和未领取交易手续费。</p>
           </section>
 
