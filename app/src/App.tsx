@@ -234,13 +234,7 @@ function Loading() {
 
 function StatusLine({ snap }: { snap: Snapshot }) {
   if (!snap.configured) return <div className="status bad">数据不可用 · {snap.problem}</div>;
-  if (snap.running)
-    return (
-      <div className="status ok">
-        <i className="dot" />
-        运行中 · 最近检查 {fmtTime(snap.lastCheckpoint)}
-      </div>
-    );
+  if (snap.running) return null; // 正常运行时不显示提示栏，只在暂停时提醒
   const rs = REASON_TEXT.filter(([b]) => snap.reasons & b).map(([, t]) => t);
   return (
     <div className="status bad">
@@ -278,7 +272,6 @@ function MinePage(props: {
   const { cfg, snap, live, account, canTx, open } = props;
   const u = snap.user;
   const isOperator = !!account && !!snap.operator && account.toLowerCase() === snap.operator.toLowerCase();
-  const ex = (a: string) => `${cfg.explorer}/address/${a}`;
   return (
     <>
       <Hero
@@ -404,12 +397,13 @@ function MinePage(props: {
         </>
       )}
 
-      <section className="card links">
-        {snap.addresses.miner && !/^0x0+$/.test(snap.addresses.miner) && (
-          <a href={ex(snap.addresses.miner)} target="_blank" rel="noreferrer">挖矿合约 ↗</a>
-        )}
-        <a href={ex(snap.addresses.pool)} target="_blank" rel="noreferrer">POP/USDT 池 ↗</a>
-        <a href={ex(snap.addresses.reward)} target="_blank" rel="noreferrer">喜羊羊代币 ↗</a>
+      <section className="card steps3" aria-label="玩法">
+        {([["coins-pair.png", "添加流动性"], ["chest.png", "每天领喜羊羊"], ["sheep-safe.png", "随时可撤回"]] as const).map(([img, t], i) => (
+          <div key={t} className="step3">
+            <img src={A(img)} alt="" />
+            <span><b>{i + 1}</b>{t}</span>
+          </div>
+        ))}
       </section>
     </>
   );
