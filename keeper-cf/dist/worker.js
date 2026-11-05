@@ -1985,6 +1985,40 @@ async function probe(env) {
   out.push(...results);
   return out;
 }
+var EXPECTED_CREATION = { len: 31680, hash: "0x3c02e49d6705bd248ed44c2374e8b7c2fb43c7cc867c6a88a1774e551c3028d2" };
+var T_OWNERSHIP = topicOf("OwnershipTransferred(address,address)");
+async function creationInfo(env, url) {
+  const c = config(env);
+  const rpc = new Rpc(c.logRpcs, 20);
+  const logs = await rpc.call("eth_getLogs", [{ address: c.miner, fromBlock: qty(c.deployBlock), toBlock: qty(c.deployBlock), topics: [T_OWNERSHIP] }]);
+  if (!logs.length) return { error: "no creation log in deploy block" };
+  const txHash = logs[0].transactionHash;
+  const tx = await rpc.call("eth_getTransactionByHash", [txHash]);
+  const input = fromHex(tx.input);
+  const prefix = input.subarray(0, EXPECTED_CREATION.len);
+  const args = input.subarray(EXPECTED_CREATION.len);
+  const w = (i) => toHex(args.subarray(i * 32, i * 32 + 32)).slice(2);
+  const addr = (i) => "0x" + w(i).slice(24);
+  const uint = (i) => BigInt("0x" + w(i)).toString();
+  const int24 = (i) => {
+    let v = BigInt("0x" + w(i));
+    if (v >= 1n << 255n) v -= 1n << 256n;
+    return v.toString();
+  };
+  const names = ["pool", "npm", "pop", "usdt", "reward", "rewardPool", "rewardPoolIsV2", "v2Factory", "operator", "twapWindow", "maxTickDeviation", "minPoolLiquidity", "minRewardPoolLiquidity", "maxValuationAge", "runwayDays", "maxUplineSearch"];
+  const kinds = ["a", "a", "a", "a", "a", "a", "b", "a", "a", "u", "i", "u", "u", "u", "u", "u"];
+  const fields = names.map((n, i) => `${i + 1}. ${n} = ${kinds[i] === "a" ? addr(i) : kinds[i] === "b" ? uint(i) === "1" ? "true" : "false" : kinds[i] === "i" ? int24(i) : uint(i)}`);
+  const want = url.searchParams.get("args");
+  return [
+    `txHash = ${txHash}`,
+    `from = ${tx.from}`,
+    `creationCodeMatches = ${toHex(keccak_256(prefix)) === EXPECTED_CREATION.hash}`,
+    `argsBytes = ${args.length}`,
+    `argsHash = ${toHex(keccak_256(args))}`,
+    want ? `argsHashMatchesQuery = ${want.toLowerCase() === toHex(keccak_256(args))}` : "",
+    ...fields
+  ].filter(Boolean).join("\n");
+}
 function statusJson(s) {
   const st = s?.status || null;
   return {
@@ -2015,6 +2049,15 @@ var worker_default = {
   async fetch(request, env) {
     const url = new URL(request.url);
     const p = url.pathname.replace(/\/+$/, "") || "/";
+    if (p === "/keeper/creation") {
+      let body;
+      try {
+        body = await creationInfo(env, url);
+      } catch (e) {
+        body = "error = " + (e?.message || e);
+      }
+      return new Response(typeof body === "string" ? body : JSON.stringify(body), { headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
+    }
     if (p === "/keeper/diag") {
       return new Response(JSON.stringify(await probe(env), null, 1), { headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
     }
