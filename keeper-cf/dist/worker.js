@@ -1342,8 +1342,14 @@ var SEL = {
   pauseReasons: selector("pauseReasons()"),
   lastCheckpointTime: selector("lastCheckpointTime()"),
   operator: selector("OPERATOR()"),
-  owner: selector("owner()")
+  owner: selector("owner()"),
+  pool: selector("POOL()"),
+  slot0: selector("slot0()"),
+  growObs: selector("increaseObservationCardinalityNext(uint16)")
 };
+var POOL_SLOTS = 2400;
+var POOL_SLOT_STEP = 500;
+var POOL_SLOT_MIN_BNB = 15n * 10n ** 15n;
 var T_JOINED = topicOf("Joined(address,address,address,uint256)");
 var T_DEPOSITED = topicOf("Deposited(address,uint256,uint128,uint256,uint256,uint256,uint256,uint256,uint256)");
 var T_WITHDRAWN = topicOf("Withdrawn(address,uint128,uint256,uint256,uint256,uint256)");
@@ -1553,7 +1559,7 @@ async function resolveKey(env, loaded, s) {
   s.generatedAt = Math.floor(Date.now() / 1e3);
   return k;
 }
-var label = (k) => k === "settle" ? "\u7ED3\u7B97" : "\u68C0\u67E5";
+var label = (k) => k === "settle" ? "\u7ED3\u7B97" : k === "slots" ? "\u6269\u5145\u4EF7\u683C\u8BB0\u5F55" : "\u68C0\u67E5";
 var autoSettleHours = (n) => Math.min(24, Math.max(1, n / 20));
 async function runOnce(env) {
   const c = config(env);
@@ -1629,7 +1635,9 @@ async function runOnce(env) {
       ethCall("0x" + SEL.lastCheckpointTime),
       ethCall("0x" + SEL.checkpoint, me),
       ethCall("0x" + SEL.operator),
-      ethCall("0x" + SEL.owner)
+      ethCall("0x" + SEL.owner),
+      ethCall("0x" + SEL.pool),
+      ...s.pool ? [["eth_call", [{ to: s.pool, data: "0x" + SEL.slot0 }, "latest"]]] : []
     ]);
     const need = (i, what) => {
       if (r[i].error) throw new Error(`\u8BFB\u53D6${what}\u5931\u8D25\uFF1A${r[i].error.message}`);
@@ -1739,6 +1747,16 @@ async function runOnce(env) {
       st.accruing = wouldRun;
     }
     st.gasPrice = gasPrice.toString();
+    if (!r[12].error && r[12].result && r[12].result.length >= 42) s.pool = "0x" + String(r[12].result).slice(-40).toLowerCase();
+    if (s.pool && r[13] && !r[13].error && r[13].result && r[13].result.length >= 2 + 64 * 5) {
+      const slotsNext = Number(BigInt("0x" + r[13].result.slice(2 + 64 * 4, 2 + 64 * 5)));
+      st.poolSlots = slotsNext;
+      if (!stuck && slotsNext < POOL_SLOTS && balance >= POOL_SLOT_MIN_BNB) {
+        const n = Math.min(POOL_SLOTS, slotsNext + POOL_SLOT_STEP);
+        const sent = await sendTxs([{ kind: "slots", to: s.pool, data: "0x" + SEL.growObs + word(n) }]);
+        if (sent.length) st.actions.push(`\u6269\u5145 POP/USDT \u6C60\u7684\u4EF7\u683C\u8BB0\u5F55\uFF1A${slotsNext} \u2192 ${n}\uFF1A${sent[0].hash}`);
+      }
+    }
     if (loaded.ok && !stuck) {
       try {
         const to = head - c.confirmations;

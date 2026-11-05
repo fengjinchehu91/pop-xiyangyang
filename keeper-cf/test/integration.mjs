@@ -73,7 +73,8 @@ check("still paused: reward price needs 30 min of snapshots", view("accruing()(b
 // 2) 10 minutes later: checkpoint was just made, nothing due, state unchanged -> no transaction
 warp(600);
 s = await run("run 2 (+10 min)");
-check("no tx when nothing is due", s.status.actions.length === 0 && s.status.ok);
+const mainActs = (st) => st.actions.filter((a) => !a.includes("扩充 POP/USDT 池的价格记录"));
+check("no tx when nothing is due (besides the one-time pool slot increase)", mainActs(s.status).length === 0 && s.status.ok);
 
 // 3) +25 min: due again; snapshot is now 35 min old -> resumes
 warp(1500);
@@ -94,7 +95,7 @@ const u0 = userAddr(0);
 const dynBefore = BigInt(cast(`call ${MINER} "pendingUsd(address)(uint256,uint256)" ${u0}`).split("\n")[1].split(" ")[0]);
 warp(1600);
 s = await run("run 5 (+27 min)");
-check("checkpoint only (settle not due yet)", s.status.actions.length === 1 && s.status.actions[0].includes("更新价格"));
+check("checkpoint only (settle not due yet)", mainActs(s.status).length === 1 && mainActs(s.status)[0].includes("更新价格"));
 warp(2100);
 s = await run("run 6 (+35 min, settle due)");
 check("hourly settle sent", s.status.actions.some((a) => a.includes("结算推荐奖励 39 个钱包")));
@@ -133,6 +134,9 @@ check("checkpoint time advanced", Number(view("lastCheckpointTime()(uint64)")) >
 warp(60);
 s = await run("run 8d");
 check("back to normal afterwards", s.status.ok && s.pending.length === 0, JSON.stringify(s.status.errors));
+const POOL_ADDR = cast(`call ${MINER} "POOL()(address)"`);
+const slotsNow = Number(cast(`call ${POOL_ADDR} "slot0()(uint160,int24,uint16,uint16,uint16,uint8,bool)"`).split("\n")[4]);
+check("pool price slots raised to 2400 once, then left alone", s.status.poolSlots === 2400 && slotsNow === 2400 && !s.status.actions.some((x) => x.includes("扩充")), `${s.status.poolSlots} / on chain ${slotsNow}`);
 
 // 9) more users than one run can settle: 2 tx x 100 = 200 per run -> continues next run
 forge(`--sig "users()"`, { N: "260", START: "40" });

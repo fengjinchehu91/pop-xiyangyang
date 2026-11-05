@@ -117,7 +117,17 @@ const SEL = {
   lastCheckpointTime: selector("lastCheckpointTime()"),
   operator: selector("OPERATOR()"),
   owner: selector("owner()"),
+  pool: selector("POOL()"),
+  slot0: selector("slot0()"),
+  growObs: selector("increaseObservationCardinalityNext(uint16)"),
 };
+// The contract reads a 30-minute average price from the POP/USDT pool. The pool keeps at most one price record per
+// second in a ring of "observation" slots; with only a few hundred slots a busy pool overwrites the 30-minute-old
+// record and the average becomes unavailable (the contract then pauses). Anyone may add slots to a pool, so the
+// keeper raises it once to POOL_SLOTS (> 1800 s of records), POOL_SLOT_STEP per transaction (gas per tx stays low).
+const POOL_SLOTS = 2400;
+const POOL_SLOT_STEP = 500;
+const POOL_SLOT_MIN_BNB = 15n * 10n ** 15n; // keep at least 0.015 BNB for the regular checks
 const T_JOINED = topicOf("Joined(address,address,address,uint256)");
 const T_DEPOSITED = topicOf("Deposited(address,uint256,uint128,uint256,uint256,uint256,uint256,uint256,uint256)");
 const T_WITHDRAWN = topicOf("Withdrawn(address,uint128,uint256,uint256,uint256,uint256)");
@@ -352,7 +362,7 @@ async function resolveKey(env, loaded, s) {
   return k;
 }
 
-const label = (k) => (k === "settle" ? "结算" : "检查");
+const label = (k) => (k === "settle" ? "结算" : k === "slots" ? "扩充价格记录" : "检查");
 // referral settlement interval: hourly for small lists, longer for big ones so gas stays roughly flat (max daily)
 export const autoSettleHours = (n) => Math.min(24, Math.max(1, n / 20));
 
@@ -434,6 +444,8 @@ export async function runOnce(env) {
       ethCall("0x" + SEL.checkpoint, me),
       ethCall("0x" + SEL.operator),
       ethCall("0x" + SEL.owner),
+      ethCall("0x" + SEL.pool),
+      ...(s.pool ? [["eth_call", [{ to: s.pool, data: "0x" + SEL.slot0 }, "latest"]]] : []),
     ]);
     const need = (i, what) => {
       if (r[i].error) throw new Error(`读取${what}失败：${r[i].error.message}`);
@@ -553,6 +565,18 @@ export async function runOnce(env) {
       st.accruing = wouldRun;
     }
     st.gasPrice = gasPrice.toString();
+
+    // ---- 2b. enough price-history slots in the POP/USDT pool (one-time, then just a cheap read each run)
+    if (!r[12].error && r[12].result && r[12].result.length >= 42) s.pool = "0x" + String(r[12].result).slice(-40).toLowerCase();
+    if (s.pool && r[13] && !r[13].error && r[13].result && r[13].result.length >= 2 + 64 * 5) {
+      const slotsNext = Number(BigInt("0x" + r[13].result.slice(2 + 64 * 4, 2 + 64 * 5)));
+      st.poolSlots = slotsNext;
+      if (!stuck && slotsNext < POOL_SLOTS && balance >= POOL_SLOT_MIN_BNB) {
+        const n = Math.min(POOL_SLOTS, slotsNext + POOL_SLOT_STEP);
+        const sent = await sendTxs([{ kind: "slots", to: s.pool, data: "0x" + SEL.growObs + word(n) }]);
+        if (sent.length) st.actions.push(`扩充 POP/USDT 池的价格记录：${slotsNext} → ${n}：${sent[0].hash}`);
+      }
+    }
 
     // ---- 3. optional work: discover wallets, then settle referral rewards
     if (loaded.ok && !stuck) {
