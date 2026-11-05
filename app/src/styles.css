@@ -265,3 +265,4 @@ a { color: var(--g6); }
 .gate-card .btn-green.wide { margin-top: 14px; }
 .gate-fine { margin: 10px 0 0; text-align: left; }
 .gate-msg.ok-txt { color: var(--g6); font-weight: 600; }
+.wait-note { color: var(--g7); font-weight: 600; margin: 8px 0 0; }

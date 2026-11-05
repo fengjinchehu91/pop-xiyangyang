@@ -900,8 +900,15 @@ function AddSheet({ cfg, snap, backend, refParam, account, canTx, close, done }:
   }, [usdtIn, popIn, mode, pairing]); // eslint-disable-line react-hooks/exhaustive-deps
   const expired = q ? now - q.createdAt > QUOTE_TTL : false;
   const needConfirmRef = !!useRef_ && !okRef;
+  const [waitNote, setWaitNote] = useState(false);
   const go = async () => {
     if (!q) return;
+    // the contract is not taking new liquidity this moment (e.g. refreshing prices): say so before any approval is signed
+    if (!snap.running) {
+      setWaitNote(true);
+      return;
+    }
+    setWaitNote(false);
     const fresh: Step[] = [
       { label: "授权 USDT（按本次金额）", status: "idle" },
       ...(q.popAmount > 0n ? [{ label: "授权 POP（按本次金额）", status: "idle" as const }] : []),
@@ -1020,14 +1027,15 @@ function AddSheet({ cfg, snap, backend, refParam, account, canTx, close, done }:
           )}
         </div>
       )}
+      {waitNote && !snap.running && <p className="fine wait-note">系统正在更新价格，请过几分钟再添加，已有收益不受影响。</p>}
       {steps && <Steps steps={steps} />}
       {allDone ? (
         <button className="btn-green wide" onClick={close}>完成</button>
       ) : expired ? (
         <button className="btn-gold wide" onClick={() => backend.quoteAdd(mode, usdtAmt!, popAmt!, SLIP_BPS).then(setQ)}>刷新报价</button>
       ) : (
-        <button className="btn-green wide" disabled={!canTx || !q || running || !!overU || !!overP || pairing || needConfirmRef || refInvalid || !snap.running} onClick={go}>
-          {running ? "处理中…" : refInvalid ? "推荐人还没有入金" : steps?.some((x) => x.status === "error") ? "重试" : !snap.running ? "价格更新中，请稍后再试" : "授权并添加"}
+        <button className="btn-green wide" disabled={!canTx || !q || running || !!overU || !!overP || pairing || needConfirmRef || refInvalid} onClick={go}>
+          {running ? "处理中…" : refInvalid ? "推荐人还没有入金" : steps?.some((x) => x.status === "error") ? "重试" : "授权并添加"}
         </button>
       )}
     </Sheet>
@@ -1122,6 +1130,11 @@ function ClaimSheet({ snap, live, backend, canTx, close, done }: { snap: Snapsho
   const go = async () => {
     if (!minOut) return;
     const s: Step[] = [{ label: "领取喜羊羊（由运营钱包授权支付）", status: "idle" }];
+    if (snap.rewardPriceEstimated) {
+      // the contract's price is refreshing: explain instead of sending (nothing is signed, nothing is lost)
+      setSteps([{ ...s[0], status: "error", error: "系统正在更新价格，请过几分钟再领取，奖励不会丢失" }]);
+      return;
+    }
     setSteps(s);
     setRunning(true);
     try {
@@ -1153,13 +1166,12 @@ function ClaimSheet({ snap, live, backend, canTx, close, done }: { snap: Snapsho
         </div>
         <p className="fine">按领取时链上时间加权参考价把 USDT 计价额度换算为喜羊羊；网络手续费（BNB）由您支付。失败时整笔回滚，奖励不会丢失。</p>
       </div>
-      {snap.rewardPriceEstimated && <p className="fine">系统正在更新价格，上面的数量是按当前市场价的估算，稍后即可领取，奖励不会丢失。</p>}
       {steps && <Steps steps={steps} />}
       {steps?.every((x) => x.status === "done") ? (
         <button className="btn-green wide" onClick={close}>完成</button>
       ) : (
-        <button className="btn-gold wide" disabled={!canTx || !minOut || running || !!snap.rewardPriceEstimated} onClick={go}>
-          {running ? "处理中…" : snap.rewardPriceEstimated ? "价格更新中，请稍后领取" : steps?.some((x) => x.status === "error") ? "重试" : "确认领取"}
+        <button className="btn-gold wide" disabled={!canTx || !minOut || running} onClick={go}>
+          {running ? "处理中…" : steps?.some((x) => x.status === "error") ? "重试" : "确认领取"}
         </button>
       )}
     </Sheet>
