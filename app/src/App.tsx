@@ -390,13 +390,13 @@ function MinePage(props: {
       <Hero
         title={
           <>
-            添加流动性，
+            添加流动性
             <br />
             收获喜羊羊
           </>
         }
         img=""
-        tag="每日 0.1%～0.5% · 随存随取"
+        tag="每日 0.5%～1% · 随存随取"
       />
       <StatusLine snap={snap} />
 
