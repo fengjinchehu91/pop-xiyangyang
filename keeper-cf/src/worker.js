@@ -37,11 +37,23 @@ const DEFAULTS = {
   SETTLE_HOURS: "", // empty = automatic: hourly for up to 20 wallets, then longer (100 wallets: every 5 h; 480+: daily)
   BATCH: 100, // wallets per settleMany transaction
   MAX_SETTLE_TX: 2, // settle transactions per run (the rest continue in the next run)
-  LOG_CHUNK: 5000, // blocks per eth_getLogs
+  LOG_CHUNK: 1000, // blocks per eth_getLogs (several free nodes allow at most ~1000)
   MAX_LOG_CALLS: 12, // eth_getLogs calls per run
   MAX_GAS_GWEI: 1, // never pay more than this per gas
   CONFIRMATIONS: 5,
 };
+// public nodes tried for eth_getLogs (many free nodes refuse event queries that are not very recent); the first
+// one that answers is remembered and used first next time. Override with LOG_RPC_URLS (comma separated).
+const LOG_RPCS = [
+  "https://bsc-rpc.publicnode.com",
+  "https://bsc-mainnet.nodereal.io/v1/64a9df0874fb4a93b9d0a3849de012d3",
+  "https://bsc.drpc.org",
+  "https://bsc.blockpi.network/v1/rpc/public",
+  "https://binance.llamarpc.com",
+  "https://bsc-pokt.nodies.app",
+  "https://bsc.meowrpc.com",
+  "https://bsc-mainnet.public.blastapi.io",
+];
 const SUBREQUEST_BUDGET = 45;
 const KEY_SLOT = "keeper-key"; // KV entry holding the self-created keeper wallet (never returned by any page) // Workers Free allows 50 outgoing requests per run
 
@@ -233,12 +245,13 @@ function config(env) {
     deployBlock: num("DEPLOY_BLOCK"),
     chainId: num("CHAIN_ID"),
     rpcs,
+    logRpcs: env.LOG_RPC_URLS ? String(env.LOG_RPC_URLS).split(",").map((x) => x.trim()).filter(Boolean) : [...new Set([...LOG_RPCS, ...rpcs])],
     explorer: str("EXPLORER"),
     checkMinutes: Math.max(10, num("CHECK_MINUTES")),
     settleHours: env.SETTLE_HOURS ? Math.max(0.25, Number(env.SETTLE_HOURS)) : null,
     batch: Math.min(150, Math.max(1, num("BATCH"))),
     maxSettleTx: Math.max(1, num("MAX_SETTLE_TX")),
-    logChunk: Math.max(100, num("LOG_CHUNK")),
+    logChunk: Math.max(50, num("LOG_CHUNK")),
     maxLogCalls: Math.max(1, num("MAX_LOG_CALLS")),
     maxGasWei: BigInt(Math.round(num("MAX_GAS_GWEI") * 1e9)),
     confirmations: num("CONFIRMATIONS"),
@@ -526,6 +539,33 @@ export async function runOnce(env) {
       try {
         const to = head - c.confirmations;
         const maxCalls = Math.max(1, Math.round(c.maxLogCalls * load));
+        if (!s.chunk || s.chunk > c.logChunk) s.chunk = c.logChunk;
+        // preferred node first (the one that worked last time), then the others
+        const order = [...c.logRpcs].sort((a, b) => (a === s.logsUrl ? -1 : b === s.logsUrl ? 1 : 0));
+        const getLogs = async (from, end) => {
+          const fails = [];
+          for (const url of order) {
+            if (rpc.left <= 6) break;
+            try {
+              const j = await rpc.post(url, {
+                jsonrpc: "2.0",
+                id: rpc.id++,
+                method: "eth_getLogs",
+                params: [{ address: c.miner, fromBlock: qty(from), toBlock: qty(end), topics: [[T_JOINED, T_DEPOSITED, T_WITHDRAWN]] }],
+              });
+              if (j && Array.isArray(j.result)) {
+                s.logsUrl = url;
+                return j.result;
+              }
+              fails.push(`${new URL(url).hostname}: ${String(j?.error?.message || "无结果").slice(0, 60)}`);
+            } catch (e) {
+              fails.push(`${new URL(url).hostname}: ${String(e?.message || e).slice(0, 60)}`);
+            }
+          }
+          const err = new Error(fails.join("；") || "网络请求次数用完");
+          err.fails = fails.length;
+          throw err;
+        };
         let calls = 0;
         while (s.scanned < to && calls < maxCalls && rpc.left > 6) {
           const from = s.scanned + 1;
@@ -533,13 +573,11 @@ export async function runOnce(env) {
           calls++;
           let logs;
           try {
-            logs = await rpc.call("eth_getLogs", [
-              { address: c.miner, fromBlock: qty(from), toBlock: qty(end), topics: [[T_JOINED, T_DEPOSITED, T_WITHDRAWN]] },
-            ]);
+            logs = await getLogs(from, end);
           } catch (e) {
-            if (s.chunk > 500) {
-              s.chunk = Math.max(500, Math.floor(s.chunk / 2)); // node limits the range: use smaller steps
-              continue;
+            if (s.chunk > 50) {
+              s.chunk = Math.max(50, Math.floor(s.chunk / 4)); // every node refused this range: use smaller steps
+              throw new Error("所有节点都拒绝了这次查询，下次用更小的范围重试（" + e.message + "）");
             }
             throw e;
           }

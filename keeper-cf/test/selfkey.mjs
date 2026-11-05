@@ -9,7 +9,7 @@ const dep = JSON.parse(fs.readFileSync(new URL(process.env.DEPLOY_JSON || "../..
 const cast = (a) => execSync(`cast ${a} --rpc-url ${RPC}`, { encoding: "utf8" }).trim();
 const kv = new Map();
 const STATE = { get: async (k, t) => (kv.has(k) ? (t === "json" ? JSON.parse(kv.get(k)) : kv.get(k)) : null), put: async (k, v) => kv.set(k, v) };
-const env = { STATE, MINER: dep.miner, DEPLOY_BLOCK: "0", CHAIN_ID: "31337", RPC_URL: RPC, MAX_GAS_GWEI: "100" };
+const env = { STATE, MINER: dep.miner, DEPLOY_BLOCK: "0", CHAIN_ID: "31337", RPC_URL: RPC, LOG_RPC_URLS: RPC, MAX_GAS_GWEI: "100" };
 let fails = 0;
 const check = (n, c, x = "") => { if (!c) fails++; console.log(c ? "ok  " : "FAIL", n, x); };
 const cron = async (e = env) => { let p; await worker.scheduled({}, e, { waitUntil: (x) => (p = x) }); await p; return JSON.parse(kv.get("state")); };

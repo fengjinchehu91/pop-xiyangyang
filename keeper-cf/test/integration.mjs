@@ -34,7 +34,7 @@ const STATE = {
     kv.set(k, v);
   },
 };
-const env = { KEEPER_KEY, STATE, MINER, DEPLOY_BLOCK: "0", CHAIN_ID: "31337", RPC_URL: RPC, RPC_URL_2: "", MAX_GAS_GWEI: "100", EXPLORER: "https://bscscan.com", SETTLE_HOURS: "1" };
+const env = { KEEPER_KEY, STATE, MINER, DEPLOY_BLOCK: "0", CHAIN_ID: "31337", RPC_URL: RPC, RPC_URL_2: "", LOG_RPC_URLS: RPC, MAX_GAS_GWEI: "100", EXPLORER: "https://bscscan.com", SETTLE_HOURS: "1" };
 
 let fails = 0;
 const check = (name, cond, extra = "") => {

@@ -1267,14 +1267,24 @@ var DEFAULTS = {
   // wallets per settleMany transaction
   MAX_SETTLE_TX: 2,
   // settle transactions per run (the rest continue in the next run)
-  LOG_CHUNK: 5e3,
-  // blocks per eth_getLogs
+  LOG_CHUNK: 1e3,
+  // blocks per eth_getLogs (several free nodes allow at most ~1000)
   MAX_LOG_CALLS: 12,
   // eth_getLogs calls per run
   MAX_GAS_GWEI: 1,
   // never pay more than this per gas
   CONFIRMATIONS: 5
 };
+var LOG_RPCS = [
+  "https://bsc-rpc.publicnode.com",
+  "https://bsc-mainnet.nodereal.io/v1/64a9df0874fb4a93b9d0a3849de012d3",
+  "https://bsc.drpc.org",
+  "https://bsc.blockpi.network/v1/rpc/public",
+  "https://binance.llamarpc.com",
+  "https://bsc-pokt.nodies.app",
+  "https://bsc.meowrpc.com",
+  "https://bsc-mainnet.public.blastapi.io"
+];
 var SUBREQUEST_BUDGET = 45;
 var KEY_SLOT = "keeper-key";
 var REASONS = [
@@ -1447,12 +1457,13 @@ function config(env) {
     deployBlock: num("DEPLOY_BLOCK"),
     chainId: num("CHAIN_ID"),
     rpcs,
+    logRpcs: env.LOG_RPC_URLS ? String(env.LOG_RPC_URLS).split(",").map((x) => x.trim()).filter(Boolean) : [.../* @__PURE__ */ new Set([...LOG_RPCS, ...rpcs])],
     explorer: str("EXPLORER"),
     checkMinutes: Math.max(10, num("CHECK_MINUTES")),
     settleHours: env.SETTLE_HOURS ? Math.max(0.25, Number(env.SETTLE_HOURS)) : null,
     batch: Math.min(150, Math.max(1, num("BATCH"))),
     maxSettleTx: Math.max(1, num("MAX_SETTLE_TX")),
-    logChunk: Math.max(100, num("LOG_CHUNK")),
+    logChunk: Math.max(50, num("LOG_CHUNK")),
     maxLogCalls: Math.max(1, num("MAX_LOG_CALLS")),
     maxGasWei: BigInt(Math.round(num("MAX_GAS_GWEI") * 1e9)),
     confirmations: num("CONFIRMATIONS")
@@ -1711,6 +1722,32 @@ async function runOnce(env) {
       try {
         const to = head - c.confirmations;
         const maxCalls = Math.max(1, Math.round(c.maxLogCalls * load));
+        if (!s.chunk || s.chunk > c.logChunk) s.chunk = c.logChunk;
+        const order = [...c.logRpcs].sort((a, b) => a === s.logsUrl ? -1 : b === s.logsUrl ? 1 : 0);
+        const getLogs = async (from, end) => {
+          const fails = [];
+          for (const url of order) {
+            if (rpc.left <= 6) break;
+            try {
+              const j = await rpc.post(url, {
+                jsonrpc: "2.0",
+                id: rpc.id++,
+                method: "eth_getLogs",
+                params: [{ address: c.miner, fromBlock: qty(from), toBlock: qty(end), topics: [[T_JOINED, T_DEPOSITED, T_WITHDRAWN]] }]
+              });
+              if (j && Array.isArray(j.result)) {
+                s.logsUrl = url;
+                return j.result;
+              }
+              fails.push(`${new URL(url).hostname}: ${String(j?.error?.message || "\u65E0\u7ED3\u679C").slice(0, 60)}`);
+            } catch (e) {
+              fails.push(`${new URL(url).hostname}: ${String(e?.message || e).slice(0, 60)}`);
+            }
+          }
+          const err = new Error(fails.join("\uFF1B") || "\u7F51\u7EDC\u8BF7\u6C42\u6B21\u6570\u7528\u5B8C");
+          err.fails = fails.length;
+          throw err;
+        };
         let calls = 0;
         while (s.scanned < to && calls < maxCalls && rpc.left > 6) {
           const from = s.scanned + 1;
@@ -1718,13 +1755,11 @@ async function runOnce(env) {
           calls++;
           let logs;
           try {
-            logs = await rpc.call("eth_getLogs", [
-              { address: c.miner, fromBlock: qty(from), toBlock: qty(end), topics: [[T_JOINED, T_DEPOSITED, T_WITHDRAWN]] }
-            ]);
+            logs = await getLogs(from, end);
           } catch (e) {
-            if (s.chunk > 500) {
-              s.chunk = Math.max(500, Math.floor(s.chunk / 2));
-              continue;
+            if (s.chunk > 50) {
+              s.chunk = Math.max(50, Math.floor(s.chunk / 4));
+              throw new Error("\u6240\u6709\u8282\u70B9\u90FD\u62D2\u7EDD\u4E86\u8FD9\u6B21\u67E5\u8BE2\uFF0C\u4E0B\u6B21\u7528\u66F4\u5C0F\u7684\u8303\u56F4\u91CD\u8BD5\uFF08" + e.message + "\uFF09");
             }
             throw e;
           }
