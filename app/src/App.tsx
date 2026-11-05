@@ -389,15 +389,6 @@ function MinePage(props: {
           </section>
         </>
       )}
-
-      <section className="card steps3" aria-label="玩法">
-        {([["coins-pair.png", "添加流动性"], ["chest.png", "每天领喜羊羊"], ["sheep-safe.png", "随时可撤回"]] as const).map(([img, t], i) => (
-          <div key={t} className="step3">
-            <img src={A(img)} alt="" />
-            <span><b>{i + 1}</b>{t}</span>
-          </div>
-        ))}
-      </section>
     </>
   );
 }
