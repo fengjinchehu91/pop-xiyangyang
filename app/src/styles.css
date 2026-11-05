@@ -39,8 +39,8 @@ a { color: var(--g6); }
 .chip-bsc { display: inline-flex; align-items: center; gap: 5px; height: 44px; padding: 0 10px 0 5px; border-radius: 999px; border: 1px solid rgba(247, 210, 122, 0.55); background: linear-gradient(180deg, rgba(255, 255, 255, 0.10), rgba(255, 255, 255, 0.02)); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 2px 8px rgba(0, 0, 0, 0.18); color: var(--gold2); }
 .chip-bsc b { font-size: 13px; font-weight: 800; letter-spacing: 0.3px; }
 .chip-ic { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 50%; background: radial-gradient(circle at 35% 30%, #2a2a2a, #0b0b0b); box-shadow: 0 0 0 1.5px rgba(240, 185, 11, 0.85), 0 2px 6px rgba(0, 0, 0, 0.35); flex: none; }
-.chip-ic svg { width: 16px; height: 16px; }
-@media (max-width: 374px) { .chip-bsc { padding: 0 8px 0 4px; gap: 4px; } .chip-ic { width: 24px; height: 24px; } .chip-ic svg { width: 14px; height: 14px; } }
+.chip-ic img { width: 18px; height: 18px; display: block; }
+@media (max-width: 374px) { .chip-bsc { padding: 0 8px 0 4px; gap: 4px; } .chip-ic { width: 24px; height: 24px; } .chip-ic img { width: 15px; height: 15px; } }
 .wallet-btn { height: 44px; min-width: 44px; padding: 0 12px; border-radius: 999px; border: 0; background: linear-gradient(180deg, var(--gold2), var(--gold)); color: #3b2a06; font-weight: 700; font-size: 13px; white-space: nowrap; }
 
 .demo-flag { background: repeating-linear-gradient(45deg, #fff3cf, #fff3cf 10px, #ffe9a8 10px, #ffe9a8 20px); color: #5a4000; font-weight: 700; font-size: 13px; padding: 8px 14px; border-bottom: 1px solid #e8c766; }

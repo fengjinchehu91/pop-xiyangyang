@@ -325,7 +325,7 @@ function Header({ cfg, account, onConnect, snap }: { cfg: AppConfig; account: st
       </div>
       <div className="hdr-r">
         <span className="chip-bsc">
-          <i className="chip-ic"><IconBnb /></i>
+          <i className="chip-ic"><img src={A("bnb.png")} alt="" /></i>
           <b>{cfg.chainId === 56 ? "BSC" : `链 ${cfg.chainId}`}</b>
         </span>
         <button className="wallet-btn" onClick={onConnect}>
@@ -1614,7 +1614,4 @@ function IconDoc() {
 }
 function IconLayers() {
   return (<svg {...sv}><path d="M12 3l9 5-9 5-9-5 9-5zM3 13l9 5 9-5" /></svg>);
-}
-function IconBnb() {
-  return (<svg width="16" height="16" viewBox="0 0 24 24" fill="#F0B90B"><path d="M12 2l3 3-3 3-3-3 3-3zm-5 5l3 3-3 3-3-3 3-3zm10 0l3 3-3 3-3-3 3-3zm-5 5l3 3-3 3-3-3 3-3zm0 5l3 3-3 3-3-3 3-3z" /></svg>);
 }
