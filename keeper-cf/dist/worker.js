@@ -1880,6 +1880,54 @@ ${hints.map((h) => `<div class="hint">${esc(h)}</div>`).join("")}
   JSON.parse(JSON.stringify(users));
   settleList({ users });
 }
+var PROBE_RPCS = [
+  "https://bsc-rpc.publicnode.com",
+  "https://bsc-dataseed.bnbchain.org",
+  "https://bsc-mainnet.nodereal.io/v1/64a9df0874fb4a93b9d0a3849de012d3",
+  "https://bsc.drpc.org",
+  "https://bsc.blockpi.network/v1/rpc/public",
+  "https://1rpc.io/bnb",
+  "https://binance.llamarpc.com",
+  "https://bsc-pokt.nodies.app",
+  "https://bsc.meowrpc.com",
+  "https://rpc.ankr.com/bsc",
+  "https://bsc-mainnet.public.blastapi.io"
+];
+async function probe(env) {
+  const c = config(env);
+  const out = [];
+  const one = async (url, method, params) => {
+    const t = Date.now();
+    try {
+      const r = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }), signal: AbortSignal.timeout(12e3) });
+      const txt = await r.text();
+      let j = null;
+      try {
+        j = JSON.parse(txt);
+      } catch {
+      }
+      const ms = Date.now() - t;
+      if (!j) return { ms, http: r.status, err: txt.slice(0, 120) };
+      if (j.error) return { ms, err: String(j.error.message || JSON.stringify(j.error)).slice(0, 160) };
+      return { ms, ok: Array.isArray(j.result) ? `${j.result.length} logs` : String(j.result).slice(0, 20) };
+    } catch (e) {
+      return { ms: Date.now() - t, err: String(e?.message || e).slice(0, 120) };
+    }
+  };
+  const results = await Promise.all(
+    PROBE_RPCS.map(async (url) => {
+      const head = await one(url, "eth_blockNumber", []);
+      const h = head.ok ? Number(head.ok) : null;
+      const filter = (a, b) => [{ address: c.miner, fromBlock: qty(a), toBlock: qty(b), topics: [[T_JOINED, T_DEPOSITED, T_WITHDRAWN]] }];
+      const old1k = await one(url, "eth_getLogs", filter(c.deployBlock, c.deployBlock + 999));
+      const old5k = await one(url, "eth_getLogs", filter(c.deployBlock, c.deployBlock + 4999));
+      const recent = h ? await one(url, "eth_getLogs", filter(h - 1e3, h - 5)) : null;
+      return { url, head, old1k, old5k, recent };
+    })
+  );
+  out.push(...results);
+  return out;
+}
 function statusJson(s) {
   const st = s?.status || null;
   return {
@@ -1910,6 +1958,9 @@ var worker_default = {
   async fetch(request, env) {
     const url = new URL(request.url);
     const p = url.pathname.replace(/\/+$/, "") || "/";
+    if (p === "/keeper/diag") {
+      return new Response(JSON.stringify(await probe(env), null, 1), { headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
+    }
     if (p !== "/" && p !== "/keeper" && p !== "/keeper.json") return new Response("Not found", { status: 404 });
     let s = pageMemo.s;
     if (Date.now() - pageMemo.t > 2e4) {

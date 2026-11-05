@@ -1,0 +1,21 @@
+{
+ "name": "喜羊羊矿场",
+ "short_name": "喜羊羊矿场",
+ "description": "添加 POP/USDT 流动性，每日收获喜羊羊",
+ "icons": [
+  {
+   "src": "/icons/icon-192.png",
+   "sizes": "192x192",
+   "type": "image/png"
+  },
+  {
+   "src": "/icons/icon-512.png",
+   "sizes": "512x512",
+   "type": "image/png"
+  }
+ ],
+ "start_url": "/",
+ "display": "standalone",
+ "background_color": "#0e3a28",
+ "theme_color": "#0a4a33"
+}
