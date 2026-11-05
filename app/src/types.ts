@@ -51,6 +51,7 @@ export interface Snapshot {
   adminPaused: boolean;
   lastCheckpoint: number;
   rewardPrice: bigint | null; // USD18 per whole reward token (TWAP), null = unavailable
+  rewardPriceEstimated?: boolean; // true: the contract's average price is briefly unavailable, this is a live market estimate
   rewardDecimals: number;
   usdtDecimals: number;
   popDecimals: number;

@@ -295,9 +295,9 @@ function useLive(snap: Snapshot | null, tick: number): Live | null {
     if (!snap?.user) return null;
     const u = snap.user;
     const pr = snap.params;
-    const dailyUsd = snap.running ? (u.valueUsd * BigInt(pr.rateBps) * BigInt(pr.personalBps)) / 100_000_000n : 0n;
+    const dailyUsd = (u.valueUsd * BigInt(pr.rateBps) * BigInt(pr.personalBps)) / 100_000_000n;
     const dt = BigInt(Math.max(0, Math.floor((Date.now() - snap.fetchedAt) / 1000)));
-    const personalUsd = u.personalUsd + (dailyUsd * dt) / 86400n;
+    const personalUsd = u.personalUsd + (snap.running ? (dailyUsd * dt) / 86400n : 0n);
     const p = snap.rewardPrice;
     const d = snap.rewardDecimals;
     const tok = (x: bigint) => usdToToken(x, p, d);
@@ -345,7 +345,10 @@ function Loading() {
   );
 }
 
-function StatusLine({ snap }: { snap: Snapshot }) {
+function StatusLine({ snap, account, force }: { snap: Snapshot; account?: string; force?: boolean }) {
+  // 暂停提示只给管理员/运营钱包看；普通用户的页面不显示
+  const me = (account || "").toLowerCase();
+  if (!force && (!me || ![snap.owner, snap.operator].some((x) => !!x && x.toLowerCase() === me))) return null;
   if (!snap.configured) return <div className="status bad">数据不可用 · {snap.problem}</div>;
   if (snap.running) return null; // 正常运行时不显示提示栏，只在暂停时提醒
   const rs = REASON_TEXT.filter(([b]) => snap.reasons & b).map(([, t]) => t);
@@ -398,7 +401,7 @@ function MinePage(props: {
         img=""
         tag="每日 0.5%～1% · 随存随取"
       />
-      <StatusLine snap={snap} />
+      <StatusLine snap={snap} account={account} />
 
       {!account ? (
         <div className="card center">
@@ -1024,7 +1027,7 @@ function AddSheet({ cfg, snap, backend, refParam, account, canTx, close, done }:
         <button className="btn-gold wide" onClick={() => backend.quoteAdd(mode, usdtAmt!, popAmt!, SLIP_BPS).then(setQ)}>刷新报价</button>
       ) : (
         <button className="btn-green wide" disabled={!canTx || !q || running || !!overU || !!overP || pairing || needConfirmRef || refInvalid || !snap.running} onClick={go}>
-          {running ? "处理中…" : refInvalid ? "推荐人还没有入金" : steps?.some((x) => x.status === "error") ? "重试" : !snap.running ? "当前暂停入金" : "授权并添加"}
+          {running ? "处理中…" : refInvalid ? "推荐人还没有入金" : steps?.some((x) => x.status === "error") ? "重试" : !snap.running ? "价格更新中，请稍后再试" : "授权并添加"}
         </button>
       )}
     </Sheet>
@@ -1150,13 +1153,13 @@ function ClaimSheet({ snap, live, backend, canTx, close, done }: { snap: Snapsho
         </div>
         <p className="fine">按领取时链上时间加权参考价把 USDT 计价额度换算为喜羊羊；网络手续费（BNB）由您支付。失败时整笔回滚，奖励不会丢失。</p>
       </div>
-      {!snap.rewardPrice && <div className="alert">喜羊羊报价暂不可用，暂不能领取。</div>}
+      {snap.rewardPriceEstimated && <p className="fine">系统正在更新价格，上面的数量是按当前市场价的估算，稍后即可领取，奖励不会丢失。</p>}
       {steps && <Steps steps={steps} />}
       {steps?.every((x) => x.status === "done") ? (
         <button className="btn-green wide" onClick={close}>完成</button>
       ) : (
-        <button className="btn-gold wide" disabled={!canTx || !minOut || running} onClick={go}>
-          {running ? "处理中…" : steps?.some((x) => x.status === "error") ? "重试" : "确认领取"}
+        <button className="btn-gold wide" disabled={!canTx || !minOut || running || !!snap.rewardPriceEstimated} onClick={go}>
+          {running ? "处理中…" : snap.rewardPriceEstimated ? "价格更新中，请稍后领取" : steps?.some((x) => x.status === "error") ? "重试" : "确认领取"}
         </button>
       )}
     </Sheet>
@@ -1330,13 +1333,13 @@ function AdminPage({ cfg, snap, backend, demo, isAdmin, refresh }: { cfg: AppCon
         <div><span>每日总发放（当前）</span><b>{fmtUnits(daily, 18)} USDT 计价</b></div>
         <div><span>参与钱包数</span><b>{snap.participants}</b></div>
         <div><span>累计实际发放</span><b>{fmtUnits(snap.totalPaidReward, snap.rewardDecimals)} 喜羊羊</b></div>
-        <div><span>喜羊羊参考价（领取用）</span><b>{p ? `${fmtUnits(p, 18, 6)} USDT` : "不可用"}</b></div>
+        <div><span>喜羊羊参考价（领取用）</span><b>{p ? `${fmtUnits(p, 18, 6)} USDT${snap.rewardPriceEstimated ? "（实时估算）" : ""}` : "不可用"}</b></div>
         <div><span>最近检查</span><b>{fmtTime(snap.lastCheckpoint)}</b></div>
         <div><span>运行状态</span><b className={snap.running ? "ok-t" : "err"}>{pr.ended ? "已永久结束" : snap.running ? "运行中" : "已暂停"}</b></div>
         <div><span>领取</span><b className={pr.claimPaused ? "err" : "ok-t"}>{pr.claimPaused ? "已暂停" : "开放"}</b></div>
       </section>
       <p className="fine pad">合约规定：可用支付额度要够“已累计待支付 + {snap.runwayDays || 3} 天的发放量”，不够就自动暂停，补足后自动恢复。人少时每天的发放量按至少 {usd0((100n * E18 * BigInt(pr.rateBps)) / 10000n)} USDT 计算。还能支撑的天数 = 超出要求的部分 ÷ 每天发放量；喜羊羊价格和平台规模变化都会改变这些数字。</p>
-      <StatusLine snap={snap} />
+      <StatusLine snap={snap} force />
 
       <KeeperCard cfg={cfg} />
 

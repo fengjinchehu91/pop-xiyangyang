@@ -2,7 +2,7 @@
 // injected wallet (EIP-1193). Never falls back to mock values: missing data is reported as unavailable.
 // @ts-ignore vendored ESM build of ethers v6.13.4 (MIT)
 import * as E from "./vendor/ethers.min.js";
-import { MINER_ABI, ERC20_ABI, POOL_ABI } from "./abi";
+import { MINER_ABI, ERC20_ABI, POOL_ABI, PAIR_ABI } from "./abi";
 import type { AppConfig } from "./config";
 import type { AddQuote, AdminEvent, AdminUserRow, Downline, ExitQuote, Params, Rec, RecKind, Snapshot, Step } from "./types";
 import { DEFAULT_PARAMS } from "./types";
@@ -161,7 +161,8 @@ export class ChainBackend {
       reasons: Number(reasons),
       adminPaused,
       lastCheckpoint: Number(lastCp),
-      rewardPrice: rp[0] ? rp[1] : null,
+      rewardPrice: rp[0] ? rp[1] : await this.marketRewardPrice().catch(() => null),
+      rewardPriceEstimated: !rp[0],
       rewardDecimals: this.dec.reward,
       usdtDecimals: this.dec.usdt,
       popDecimals: this.dec.pop,
@@ -245,6 +246,36 @@ export class ChainBackend {
     const l = liquidityForAmounts(sp, this.sqrtLo, this.sqrtHi, d0, d1);
     const [a0, a1] = amountsForLiquidity(sp, this.sqrtLo, this.sqrtHi, l);
     return popIs0 ? [a0, a1] : [a1, a0];
+  }
+
+  /** Display-only estimate of the reward token's USD price from the pools' current prices, used while the
+   * contract's own average price is briefly unavailable. Claims always settle at the contract's price. */
+  async marketRewardPrice(): Promise<bigint | null> {
+    const m = this.miner;
+    const [isV2, viaPop] = await Promise.all([m.REWARD_V2(), m.REWARD_VIA_POP()]);
+    const unit = 10n ** BigInt(this.dec.reward);
+    let counterRaw: bigint; // counter-token raw amount for one whole reward token
+    if (isV2) {
+      const pair = new E.Contract(this.addr.rewardPool, PAIR_ABI, this.read);
+      const [res, t0] = await Promise.all([pair.getReserves(), pair.token0()]);
+      const rewardIs0 = String(t0).toLowerCase() === this.addr.reward.toLowerCase();
+      const [rr, rc] = rewardIs0 ? [BigInt(res[0]), BigInt(res[1])] : [BigInt(res[1]), BigInt(res[0])];
+      if (rr === 0n) return null;
+      counterRaw = (unit * rc) / rr;
+    } else {
+      const pool = new E.Contract(this.addr.rewardPool, POOL_ABI, this.read);
+      const [s0, t0] = await Promise.all([pool.slot0(), pool.token0()]);
+      const r = BigInt(s0[0]) * BigInt(s0[0]); // token1 per token0 * 2^192
+      const rewardIs0 = String(t0).toLowerCase() === this.addr.reward.toLowerCase();
+      counterRaw = rewardIs0 ? (unit * r) / Q192 : (unit * Q192) / r;
+    }
+    let usdtRaw = counterRaw;
+    if (viaPop) {
+      const px = await this.spotPopPerUsdt(); // POP raw per USDT raw = num / den
+      usdtRaw = (counterRaw * px.den) / px.num;
+    }
+    const v = usdtRaw * 10n ** BigInt(18 - this.dec.usdt);
+    return v > 0n ? v : null;
   }
 
   // ------------------------------------------------------------------ quotes
@@ -701,8 +732,8 @@ export function humanError(e: any): string {
   if (e?.code === "ACTION_REJECTED" || /user rejected|denied/i.test(m)) return "您已在钱包中拒绝签名，可重新发起";
   if (/Slippage/.test(m)) return "价格变化超出滑点保护，请刷新报价后重试";
   if (/Expired/.test(m)) return "报价已过期，请刷新后重试";
-  if (/NotRunning/.test(m)) return "当前暂停新增入金（见运行状态），本金退出不受影响";
-  if (/RewardPriceUnavailable/.test(m)) return "喜羊羊报价暂不可用，暂不能领取，奖励不会丢失";
+  if (/NotRunning/.test(m)) return "系统正在更新价格，暂时不能添加，请过几分钟再试";
+  if (/RewardPriceUnavailable/.test(m)) return "系统正在更新价格，请过几分钟再领取，奖励不会丢失";
   if (/FeeOnTransfer/.test(m)) return "到账数量和应发数量不一致（代币转账扣税，或运营钱包给自己领取），交易已整体回滚，奖励不会丢失";
   if (/NothingToClaim/.test(m)) return "暂无可领取奖励";
   if (/insufficient funds|gas required exceeds|INSUFFICIENT_FUNDS/i.test(m) || e?.code === "INSUFFICIENT_FUNDS")

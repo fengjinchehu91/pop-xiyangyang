@@ -8,6 +8,8 @@ export const MINER_ABI = [
   "function USDT() view returns (address)",
   "function REWARD() view returns (address)",
   "function REWARD_POOL() view returns (address)",
+  "function REWARD_V2() view returns (bool)",
+  "function REWARD_VIA_POP() view returns (bool)",
   "function FEE() view returns (uint24)",
   "function TOKEN0() view returns (address)",
   "function SQRT_LOWER() view returns (uint160)",
@@ -95,4 +97,9 @@ export const POOL_ABI = [
   "function slot0() view returns (uint160 sqrtPriceX96, int24 tick, uint16, uint16, uint16, uint32, bool)",
   "function token0() view returns (address)",
   "function fee() view returns (uint24)",
+];
+
+export const PAIR_ABI = [
+  "function getReserves() view returns (uint112, uint112, uint32)",
+  "function token0() view returns (address)",
 ];
