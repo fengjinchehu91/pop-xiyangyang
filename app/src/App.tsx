@@ -1098,7 +1098,6 @@ function ExitSheet({ snap, backend, account, canTx, close, done }: { snap: Snaps
         </div>
         <p className="fine">另含该仓位累计的交易手续费（归您所有，退出时一并结算）。按当前池子价格估算，最少到账保护 {SLIP_BPS / 100}%。</p>
       </div>
-      <div className="note-gold">ⓘ 固定返还 POP + USDT，不支持修改币种；退回的是仓位实际资产，不保证等于原始入金 USDT 金额。</div>
       <div className="quote">
         <div className="qr-row">
           <span>剩余LP参考价值</span>

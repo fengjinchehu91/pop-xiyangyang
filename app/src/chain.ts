@@ -604,7 +604,6 @@ export class ChainBackend {
           sign: "+",
           lines: [
             { label: "投入", value: `${fmtUnits(a.usdtIn, d.usdt)} USDT${a.popIn > 0n ? ` + ${fmtUnits(a.popIn, d.pop)} POP` : ""}` },
-            { label: "退回余量", value: `${fmtUnits(a.usdtRefund, d.usdt)} USDT / ${fmtUnits(a.popRefund, d.pop)} POP` },
           ],
           time,
           tx: l.transactionHash,
