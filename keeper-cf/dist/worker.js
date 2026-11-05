@@ -1661,7 +1661,7 @@ async function runOnce(env) {
         }
         const gas = big2(est[i].result) * 13n / 10n + 15000n;
         if (gas * gasPrice > spendable) {
-          st.errors.push(`\u68C0\u67E5\u94B1\u5305\u7684 BNB \u4E0D\u591F\u4ED8\u624B\u7EED\u8D39\uFF0C\u8BF7\u5F80 ${me} \u8F6C 0.05 BNB`);
+          st.errors.push(`\u68C0\u67E5\u94B1\u5305\u7684 BNB \u4E0D\u591F\u4ED8\u624B\u7EED\u8D39\uFF0C\u8BF7\u5F80 ${me} \u8F6C 0.01 BNB`);
           break;
         }
         spendable -= gas * gasPrice;
@@ -1850,8 +1850,8 @@ function statusPage(s, env) {
   let pill = ["wait", "\u8FD8\u6CA1\u6709\u8FD0\u884C\u8FC7"];
   const hints = [];
   if (!env.STATE) hints.push("\u8FD8\u6CA1\u6709\u7ED1\u5B9A KV \u5B58\u50A8\uFF0C\u53D8\u91CF\u540D\u5FC5\u987B\u662F STATE\u3002");
-  if (st?.keeper && st.balance !== null && BigInt(st.balance) < 5n * 10n ** 15n)
-    hints.push(`\u8BF7\u5F80\u68C0\u67E5\u94B1\u5305 ${st.keeper} \u8F6C 0.05 BNB \u4F5C\u4E3A\u624B\u7EED\u8D39\uFF08\u53EA\u80FD\u8F6C BSC \u94FE\u4E0A\u7684 BNB\uFF09\uFF0C\u8F6C\u5165\u540E 10 \u5206\u949F\u5185\u81EA\u52A8\u5F00\u59CB\u5DE5\u4F5C\u3002`);
+  if (st?.keeper && st.balance !== null && BigInt(st.balance) < 3n * 10n ** 15n)
+    hints.push(`\u8BF7\u5F80\u68C0\u67E5\u94B1\u5305 ${st.keeper} \u8F6C 0.01 BNB \u4F5C\u4E3A\u624B\u7EED\u8D39\uFF08\u53EA\u80FD\u8F6C BSC \u94FE\u4E0A\u7684 BNB\uFF09\uFF0C\u8F6C\u5165\u540E 10 \u5206\u949F\u5185\u81EA\u52A8\u5F00\u59CB\u5DE5\u4F5C\u3002`);
   if (st) {
     const fresh = nowS - st.at < 30 * 60;
     pill = st.ok && fresh ? ["ok", "\u6B63\u5E38\u8FD0\u884C"] : fresh ? ["warn", "\u6709\u95EE\u9898\uFF0C\u89C1\u4E0B\u65B9"] : ["warn", "\u8D85\u8FC7 30 \u5206\u949F\u6CA1\u6709\u8FD0\u884C"];
@@ -1871,7 +1871,7 @@ function statusPage(s, env) {
     );
     if (st.keeper) {
       row("\u68C0\u67E5\u94B1\u5305", `<a href="${esc(c.explorer)}/address/${esc(st.keeper)}" target="_blank">${esc(st.keeper.slice(0, 8) + "\u2026" + st.keeper.slice(-6))}</a>`);
-      const low = st.balance !== null && BigInt(st.balance) < 5n * 10n ** 15n;
+      const low = st.balance !== null && BigInt(st.balance) < 3n * 10n ** 15n;
       const d = daysLeft(s);
       row(
         "\u68C0\u67E5\u94B1\u5305\u4F59\u989D",
@@ -1975,7 +1975,7 @@ function statusJson(s) {
     lastCheckpoint: st?.lastCheckpoint ?? null,
     keeper: st?.keeper || s?.keeperAddr || null,
     balance: st?.balance ?? null,
-    lowBalance: st?.balance != null ? BigInt(st.balance) < 5n * 10n ** 15n : null,
+    lowBalance: st?.balance != null ? BigInt(st.balance) < 3n * 10n ** 15n : null,
     daysLeft: s ? daysLeft(s) : null,
     users: st?.users ?? 0,
     toSettle: st?.toSettle ?? 0,

@@ -471,7 +471,7 @@ export async function runOnce(env) {
         }
         const gas = (big(est[i].result) * 13n) / 10n + 15000n;
         if (gas * gasPrice > spendable) {
-          st.errors.push(`检查钱包的 BNB 不够付手续费，请往 ${me} 转 0.05 BNB`);
+          st.errors.push(`检查钱包的 BNB 不够付手续费，请往 ${me} 转 0.01 BNB`);
           break;
         }
         spendable -= gas * gasPrice;
@@ -677,8 +677,8 @@ export function statusPage(s, env) {
   let pill = ["wait", "还没有运行过"];
   const hints = [];
   if (!env.STATE) hints.push("还没有绑定 KV 存储，变量名必须是 STATE。");
-  if (st?.keeper && st.balance !== null && BigInt(st.balance) < 5n * 10n ** 15n)
-    hints.push(`请往检查钱包 ${st.keeper} 转 0.05 BNB 作为手续费（只能转 BSC 链上的 BNB），转入后 10 分钟内自动开始工作。`);
+  if (st?.keeper && st.balance !== null && BigInt(st.balance) < 3n * 10n ** 15n)
+    hints.push(`请往检查钱包 ${st.keeper} 转 0.01 BNB 作为手续费（只能转 BSC 链上的 BNB），转入后 10 分钟内自动开始工作。`);
   if (st) {
     const fresh = nowS - st.at < 30 * 60;
     pill = st.ok && fresh ? ["ok", "正常运行"] : fresh ? ["warn", "有问题，见下方"] : ["warn", "超过 30 分钟没有运行"];
@@ -699,7 +699,7 @@ export function statusPage(s, env) {
     );
     if (st.keeper) {
       row("检查钱包", `<a href="${esc(c.explorer)}/address/${esc(st.keeper)}" target="_blank">${esc(st.keeper.slice(0, 8) + "…" + st.keeper.slice(-6))}</a>`);
-      const low = st.balance !== null && BigInt(st.balance) < 5n * 10n ** 15n;
+      const low = st.balance !== null && BigInt(st.balance) < 3n * 10n ** 15n;
       const d = daysLeft(s);
       row(
         "检查钱包余额",
@@ -811,7 +811,7 @@ export function statusJson(s) {
     lastCheckpoint: st?.lastCheckpoint ?? null,
     keeper: st?.keeper || s?.keeperAddr || null,
     balance: st?.balance ?? null,
-    lowBalance: st?.balance != null ? BigInt(st.balance) < 5n * 10n ** 15n : null,
+    lowBalance: st?.balance != null ? BigInt(st.balance) < 3n * 10n ** 15n : null,
     daysLeft: s ? daysLeft(s) : null,
     users: st?.users ?? 0,
     toSettle: st?.toSettle ?? 0,

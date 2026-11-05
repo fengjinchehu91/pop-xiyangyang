@@ -20,14 +20,14 @@ let s = await cron();
 const key1 = kv.get("keeper-key");
 check("first run creates a wallet", /^0x[0-9a-f]{64}$/.test(key1) && /^0x[0-9a-f]{40}$/.test(s.keeperAddr), s.keeperAddr);
 let j = await json();
-check("status asks for BNB", j.keeper === s.keeperAddr && j.lowBalance === true && j.errors.some((e) => e.includes("转 0.05 BNB")), JSON.stringify(j.errors));
+check("status asks for BNB", j.keeper === s.keeperAddr && j.lowBalance === true && j.errors.some((e) => e.includes("转 0.01 BNB")), JSON.stringify(j.errors));
 const page = await (await worker.fetch(new Request("https://site.example/keeper"), env)).text();
-check("status page shows the address and the BNB request", page.includes(s.keeperAddr) && page.includes("转 0.05 BNB"));
+check("status page shows the address and the BNB request", page.includes(s.keeperAddr) && page.includes("转 0.01 BNB"));
 check("the key is never in any response", !page.includes(key1.slice(2)) && !JSON.stringify(j).includes(key1.slice(2)) && !kv.get("state").includes(key1.slice(2)));
 check("website paths are left to the website files", (await worker.fetch(new Request("https://site.example/index.html"), env)).status === 404);
 
 // owner funds it (in reality: a normal BNB transfer from their wallet)
-cast(`send ${s.keeperAddr} --value 0.05ether --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80`);
+cast(`send ${s.keeperAddr} --value 0.01ether --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80`);
 cast("rpc evm_increaseTime 1600"); cast("rpc evm_mine");
 s = await cron();
 check("after funding: works", s.status.ok && s.status.actions.some((a) => a.includes("更新价格")), JSON.stringify(s.status));

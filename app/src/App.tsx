@@ -1062,7 +1062,7 @@ function KeeperCard({ cfg }: { cfg: AppConfig }) {
       <div><span>推荐奖励自动结算</span><b>{k.lastSettle ? `最近 ${fmtTime(k.lastSettle)}` : "还没有需要结算的"}{k.settleHours ? ` · 约每 ${Math.round(k.settleHours * 10) / 10} 小时` : ""}</b></div>
       {k.lowBalance && k.keeper && (
         <div className="alert warn">
-          请用任意钱包往下面这个检查钱包地址转 <b className="nowrap">0.05 BNB</b>（BSC 链），转入后 10 分钟内自动开始工作。这个钱包只用来付检查的手续费，没有任何其他权限。
+          请用任意钱包往下面这个检查钱包地址转 <b className="nowrap">0.01 BNB</b>（BSC 链），转入后 10 分钟内自动开始工作。这个钱包只用来付检查的手续费，没有任何其他权限。
           <span className="addr-full mono">{k.keeper}</span>
         </div>
       )}
