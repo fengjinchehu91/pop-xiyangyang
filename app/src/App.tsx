@@ -1102,7 +1102,16 @@ function AdminPage({ cfg, snap, backend, demo, isAdmin, refresh }: { cfg: AppCon
   const needTokens = r && p ? usdToToken(r.liabilityUsd, p, snap.rewardDecimals) : null;
   const usableUsd = r && p ? (r.usable * p) / 10n ** BigInt(snap.rewardDecimals) : null;
   const daily = snap.tvlUsd ? (snap.tvlUsd * BigInt(pr.rateBps)) / 10000n : null;
-  const days = usableUsd !== null && daily && daily > 0n && r ? Number(((usableUsd - r.liabilityUsd) * 100n) / daily) / 100 : null;
+  // the contract's own rule: usable reserve >= unpaid + runwayDays x max(daily emission, emission of 100 USDT)
+  const minDaily = (100n * E18 * BigInt(pr.rateBps)) / 10000n;
+  const effDaily = daily !== null && daily > minDaily ? daily : minDaily;
+  const requiredUsd = r ? r.liabilityUsd + BigInt(snap.runwayDays || 0) * effDaily : null;
+  const requiredTokens = requiredUsd !== null && p ? usdToToken(requiredUsd, p, snap.rewardDecimals) : null;
+  const shortTokens = requiredTokens !== null && r && r.usable < requiredTokens ? requiredTokens - r.usable : null;
+  const days =
+    usableUsd !== null && requiredUsd !== null && effDaily > 0n && usableUsd >= requiredUsd
+      ? Number(((usableUsd - requiredUsd) * 100n) / effDaily) / 100
+      : null;
   const act = async (a: string, label: string, arg: any = 0n) => {
     const st: Step[] = [{ label, status: "idle" }];
     setSteps(st);
@@ -1140,7 +1149,13 @@ function AdminPage({ cfg, snap, backend, demo, isAdmin, refresh }: { cfg: AppCon
         <div><span>剩余授权额度</span><b>{fmtUnits(r?.allowance ?? null, snap.rewardDecimals)}</b></div>
         <div><span>可用支付额度</span><b>{fmtUnits(r?.usable ?? null, snap.rewardDecimals)}</b></div>
         <div><span>已累计待支付（上限估算）</span><b>{fmtUnits(r?.liabilityUsd ?? null, 18)} USDT ≈ {fmtUnits(needTokens, snap.rewardDecimals)} 喜羊羊</b></div>
-        <div><span>估算可支撑</span><b>{days !== null ? `${days.toFixed(1)} 天` : "—"}</b></div>
+        <div><span>合约要求至少可用</span><b>{requiredTokens !== null ? `${fmtUnits(requiredTokens, snap.rewardDecimals, 0)} 喜羊羊` : "—"}</b></div>
+        <div><span>估算还能支撑</span><b className={shortTokens ? "err" : ""}>{shortTokens ? "已不足，会自动暂停" : days !== null ? `约 ${days.toFixed(1)} 天` : "—"}</b></div>
+        {shortTokens && (
+          <div className="alert warn">
+            可用支付额度（余额和授权额度里较小的那个）还差约 <b>{fmtUnits(shortTokens, snap.rewardDecimals, 0)} 喜羊羊</b>。请在下面“授权 / 补充授权”里填一个更大的数，并确保运营钱包里有这么多喜羊羊；建议多留一些，喜羊羊价格下跌时要求会变高。
+          </div>
+        )}
         <div><span>平台LP参考价值</span><b>{fmtUnits(snap.tvlUsd, 18)} USDT</b></div>
         <div><span>每日总发放（当前）</span><b>{fmtUnits(daily, 18)} USDT 计价</b></div>
         <div><span>参与钱包数</span><b>{snap.participants}</b></div>
@@ -1150,7 +1165,7 @@ function AdminPage({ cfg, snap, backend, demo, isAdmin, refresh }: { cfg: AppCon
         <div><span>运行状态</span><b className={snap.running ? "ok-t" : "err"}>{pr.ended ? "已永久结束" : snap.running ? "运行中" : "已暂停"}</b></div>
         <div><span>领取</span><b className={pr.claimPaused ? "err" : "ok-t"}>{pr.claimPaused ? "已暂停" : "开放"}</b></div>
       </section>
-      <p className="fine pad">估算可支撑时间 =（可用额度折算 USDT − 已累计待支付）÷ 当前每日总发放；喜羊羊价格和平台规模变化都会改变这个数字。</p>
+      <p className="fine pad">合约规定：可用支付额度要够“已累计待支付 + {snap.runwayDays || 3} 天的发放量”，不够就自动暂停，补足后自动恢复。人少时每天的发放量按至少 {usd0((100n * E18 * BigInt(pr.rateBps)) / 10000n)} USDT 计算。还能支撑的天数 = 超出要求的部分 ÷ 每天发放量；喜羊羊价格和平台规模变化都会改变这些数字。</p>
       <StatusLine snap={snap} />
 
       <KeeperCard cfg={cfg} />
