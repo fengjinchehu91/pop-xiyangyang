@@ -314,6 +314,23 @@ var getRecoveryBit = (x, y, r) => (x === r ? 0 : 2) | Number(y & 1n);
 var getPublicKey = (privKey, isCompressed = true) => {
   return G.multiply(secretKeyToScalar(privKey)).toBytes(isCompressed);
 };
+var isValidSecretKey = (secretKey) => {
+  try {
+    return !!secretKeyToScalar(secretKey);
+  } catch (error) {
+    return false;
+  }
+};
+var isValidPublicKey = (publicKey, isCompressed) => {
+  try {
+    const l = publicKey.length;
+    if (isCompressed === true && l !== 33) return false;
+    if (isCompressed === false && l !== 65) return false;
+    return !!Point.fromBytes(publicKey);
+  } catch (error) {
+    return false;
+  }
+};
 var assertRecoveryBit = (recovery) => {
   if (recovery != null && [0, 1, 2, 3].includes(recovery)) return recovery;
   throw new Error("invalid recovery id");
@@ -474,6 +491,18 @@ var sign = (message, secretKey, opts = {}) => {
   const msg = prepMsg(message, o[1], false);
   return _sign(msg, secretKey, o, hmacDrbg);
 };
+var randomSecretKey = (seed) => {
+  seed = seed === void 0 ? randomBytes(48) : seed;
+  abytes(seed);
+  if (seed.length < 48 || seed.length > 1024) throw new RangeError("expected 48-1024b");
+  const num = M(bytesToNumBE(seed), N - 1n);
+  return numTo32b(num + 1n);
+};
+var utils = /* @__PURE__ */ freeze({
+  isValidSecretKey,
+  isValidPublicKey,
+  randomSecretKey
+});
 var precompute = () => {
   const points = [];
   let p = G;
@@ -1233,15 +1262,26 @@ var DEFAULTS = {
   // wallets per settleMany transaction
   MAX_SETTLE_TX: 2,
   // settle transactions per run (the rest continue in the next run)
-  LOG_CHUNK: 5e3,
-  // blocks per eth_getLogs
+  LOG_CHUNK: 1e3,
+  // blocks per eth_getLogs (several free nodes allow at most ~1000)
   MAX_LOG_CALLS: 12,
   // eth_getLogs calls per run
   MAX_GAS_GWEI: 1,
   // never pay more than this per gas
   CONFIRMATIONS: 5
 };
+var LOG_RPCS = [
+  "https://bsc-rpc.publicnode.com",
+  "https://bsc-mainnet.nodereal.io/v1/64a9df0874fb4a93b9d0a3849de012d3",
+  "https://bsc.drpc.org",
+  "https://bsc.blockpi.network/v1/rpc/public",
+  "https://binance.llamarpc.com",
+  "https://bsc-pokt.nodies.app",
+  "https://bsc.meowrpc.com",
+  "https://bsc-mainnet.public.blastapi.io"
+];
 var SUBREQUEST_BUDGET = 45;
+var KEY_SLOT = "keeper-key";
 var REASONS = [
   [1, "\u7BA1\u7406\u5458\u5DF2\u6682\u505C"],
   [2, "\u6D41\u52A8\u6027\u4F30\u503C\u6682\u4E0D\u53EF\u7528\uFF08\u4EF7\u683C\u5386\u53F2\u4E0D\u8DB3\u3001\u504F\u79BB\u8FC7\u5927\u6216\u6D41\u52A8\u6027\u4E0D\u8DB3\uFF09"],
@@ -1412,12 +1452,13 @@ function config(env) {
     deployBlock: num("DEPLOY_BLOCK"),
     chainId: num("CHAIN_ID"),
     rpcs,
+    logRpcs: env.LOG_RPC_URLS ? String(env.LOG_RPC_URLS).split(",").map((x) => x.trim()).filter(Boolean) : [.../* @__PURE__ */ new Set([...LOG_RPCS, ...rpcs])],
     explorer: str("EXPLORER"),
     checkMinutes: Math.max(10, num("CHECK_MINUTES")),
     settleHours: env.SETTLE_HOURS ? Math.max(0.25, Number(env.SETTLE_HOURS)) : null,
     batch: Math.min(150, Math.max(1, num("BATCH"))),
     maxSettleTx: Math.max(1, num("MAX_SETTLE_TX")),
-    logChunk: Math.max(100, num("LOG_CHUNK")),
+    logChunk: Math.max(50, num("LOG_CHUNK")),
     maxLogCalls: Math.max(1, num("MAX_LOG_CALLS")),
     maxGasWei: BigInt(Math.round(num("MAX_GAS_GWEI") * 1e9)),
     confirmations: num("CONFIRMATIONS")
@@ -1444,10 +1485,12 @@ function freshState(c) {
     status: null
   };
 }
+var memState = null;
 async function loadState(env, c) {
   if (!env.STATE || typeof env.STATE.get !== "function") return { ok: false, why: "\u8FD8\u6CA1\u6709\u7ED1\u5B9A KV\uFF08\u53D8\u91CF\u540D STATE\uFF09", s: freshState(c) };
   try {
-    const s = await env.STATE.get("state", "json");
+    let s = await env.STATE.get("state", "json");
+    if (memState && memState.miner === c.miner && (!s || (memState.seq || 0) >= (s.seq || 0))) s = JSON.parse(JSON.stringify(memState));
     if (!s || s.v !== 1 || s.miner !== c.miner) return { ok: true, s: freshState(c) };
     return { ok: true, s };
   } catch (e) {
@@ -1471,20 +1514,39 @@ function applyLog(users, l) {
 }
 var settleList = (s) => Object.keys(s.users).filter((a) => s.users[a][1] === 1 && s.users[a][0] !== "0");
 var cachedKey = null;
-function keyFromEnv(env) {
-  const str = String(env.KEEPER_KEY || "").trim();
+function keyFromString(str, what) {
+  str = String(str).trim();
   if (cachedKey && cachedKey.str === str) return cachedKey;
-  if (!str) throw new Error("\u8FD8\u6CA1\u6709\u8BBE\u7F6E KEEPER_KEY\uFF08\u68C0\u67E5\u94B1\u5305\u7684\u79C1\u94A5\uFF09");
-  if (!/^(0x)?[0-9a-fA-F]{64}$/.test(str)) throw new Error("KEEPER_KEY \u683C\u5F0F\u4E0D\u5BF9\uFF1A\u5E94\u8BE5\u662F 64 \u4F4D\u5341\u516D\u8FDB\u5236\u79C1\u94A5");
+  if (!/^(0x)?[0-9a-fA-F]{64}$/.test(str)) throw new Error(`${what}\u683C\u5F0F\u4E0D\u5BF9\uFF1A\u5E94\u8BE5\u662F 64 \u4F4D\u5341\u516D\u8FDB\u5236\u79C1\u94A5`);
   const key = fromHex(str);
   let addr;
   try {
     addr = addressOf(key);
   } catch {
-    throw new Error("KEEPER_KEY \u4E0D\u662F\u6709\u6548\u7684\u79C1\u94A5");
+    throw new Error(`${what}\u4E0D\u662F\u6709\u6548\u7684\u79C1\u94A5`);
   }
   cachedKey = { str, key, addr };
   return cachedKey;
+}
+async function resolveKey(env, loaded, s) {
+  if (env.KEEPER_KEY) return keyFromString(env.KEEPER_KEY, "KEEPER_KEY ");
+  if (!loaded.ok) throw new Error(loaded.why + "\uFF0C\u65E0\u6CD5\u8BFB\u53D6\u68C0\u67E5\u94B1\u5305");
+  let stored;
+  try {
+    stored = await env.STATE.get(KEY_SLOT);
+  } catch (e) {
+    throw new Error("\u8BFB\u53D6\u68C0\u67E5\u94B1\u5305\u5931\u8D25\uFF1A" + (e?.message || e));
+  }
+  if (stored) return keyFromString(stored, "\u4FDD\u5B58\u7684\u68C0\u67E5\u94B1\u5305");
+  if (s.generatedAddr) {
+    throw new Error("\u627E\u4E0D\u5230\u4E4B\u524D\u521B\u5EFA\u7684\u68C0\u67E5\u94B1\u5305\u5BC6\u94A5\u3002\u4E3A\u4E86\u4E0D\u4E22\u5931\u91CC\u9762\u7684 BNB\uFF0C\u5DF2\u505C\u6B62\u8FD0\u884C\uFF0C\u8BF7\u8054\u7CFB\u5F00\u53D1\u8005\u5904\u7406\u3002");
+  }
+  const hex = toHex(utils.randomSecretKey());
+  await env.STATE.put(KEY_SLOT, hex);
+  const k = keyFromString(hex, "\u65B0\u5EFA\u7684\u68C0\u67E5\u94B1\u5305");
+  s.generatedAddr = k.addr;
+  s.generatedAt = Math.floor(Date.now() / 1e3);
+  return k;
 }
 var label = (k) => k === "settle" ? "\u7ED3\u7B97" : "\u68C0\u67E5";
 var autoSettleHours = (n) => Math.min(24, Math.max(1, n / 20));
@@ -1515,19 +1577,40 @@ async function runOnce(env) {
   }
   const load = loaded.ok && s.load || 1;
   const rpc = new Rpc(c.rpcs, SUBREQUEST_BUDGET);
-  const save = async (busy) => {
+  const fingerprint = (x) => {
+    const t = x.status || {};
+    return JSON.stringify({
+      ...x,
+      scanned: 0,
+      // re-reading a few blocks next run is harmless; new users change `users` and force a write
+      okAt: 0,
+      savedAt: 0,
+      seq: 0,
+      load: Math.round((x.load || 1) * 4),
+      status: { ok: t.ok, errors: t.errors, actions: t.actions, accruing: t.accruing, reasons: t.reasons, keeper: t.keeper, users: t.users, toSettle: t.toSettle }
+    });
+  };
+  const fp0 = loaded.ok ? fingerprint(s) : null;
+  const save = async (busy, force = false) => {
     if (!loaded.ok) return;
     s.busy = busy;
     s.status = st;
-    try {
-      await env.STATE.put("state", JSON.stringify(s));
-    } catch (e) {
-      st.errors.push("\u4FDD\u5B58 KV \u5931\u8D25\uFF1A" + (e?.message || e));
+    const nowS = Math.floor(Date.now() / 1e3);
+    if (force || fingerprint(s) !== fp0 || nowS - (s.savedAt || 0) >= 600) {
+      s.savedAt = nowS;
+      s.seq = (s.seq || 0) + 1;
+      try {
+        await env.STATE.put("state", JSON.stringify(s));
+      } catch (e) {
+        st.errors.push("\u4FDD\u5B58 KV \u5931\u8D25\uFF1A" + (e?.message || e));
+      }
     }
+    memState = JSON.parse(JSON.stringify(s));
   };
   try {
-    const { key, addr: me } = keyFromEnv(env);
+    const { key, addr: me } = await resolveKey(env, loaded, s);
     st.keeper = me;
+    s.keeperAddr = me;
     const ethCall = (data, from) => ["eth_call", [from ? { from, to: c.miner, data } : { to: c.miner, data }, "latest"]];
     const r = await rpc.batch([
       ["eth_chainId", []],
@@ -1595,7 +1678,7 @@ async function runOnce(env) {
         }
         const gas = big2(est[i].result) * 13n / 10n + 15000n;
         if (gas * gasPrice > spendable) {
-          st.errors.push("\u68C0\u67E5\u94B1\u5305\u7684 BNB \u4E0D\u591F\u4ED8\u624B\u7EED\u8D39\uFF0C\u8BF7\u5F80\u68C0\u67E5\u94B1\u5305\u91CC\u8F6C\u4E00\u70B9 BNB");
+          st.errors.push(`\u68C0\u67E5\u94B1\u5305\u7684 BNB \u4E0D\u591F\u4ED8\u624B\u7EED\u8D39\uFF0C\u8BF7\u5F80 ${me} \u8F6C 0.01 BNB`);
           break;
         }
         spendable -= gas * gasPrice;
@@ -1652,10 +1735,35 @@ async function runOnce(env) {
     }
     st.gasPrice = gasPrice.toString();
     if (loaded.ok && !stuck) {
-      await save({ at: now });
       try {
         const to = head - c.confirmations;
         const maxCalls = Math.max(1, Math.round(c.maxLogCalls * load));
+        if (!s.chunk || s.chunk > c.logChunk) s.chunk = c.logChunk;
+        const order = [...c.logRpcs].sort((a, b) => a === s.logsUrl ? -1 : b === s.logsUrl ? 1 : 0);
+        const getLogs = async (from, end) => {
+          const fails = [];
+          for (const url of order) {
+            if (rpc.left <= 6) break;
+            try {
+              const j = await rpc.post(url, {
+                jsonrpc: "2.0",
+                id: rpc.id++,
+                method: "eth_getLogs",
+                params: [{ address: c.miner, fromBlock: qty(from), toBlock: qty(end), topics: [[T_JOINED, T_DEPOSITED, T_WITHDRAWN]] }]
+              });
+              if (j && Array.isArray(j.result)) {
+                s.logsUrl = url;
+                return j.result;
+              }
+              fails.push(`${new URL(url).hostname}: ${String(j?.error?.message || "\u65E0\u7ED3\u679C").slice(0, 60)}`);
+            } catch (e) {
+              fails.push(`${new URL(url).hostname}: ${String(e?.message || e).slice(0, 60)}`);
+            }
+          }
+          const err = new Error(fails.join("\uFF1B") || "\u7F51\u7EDC\u8BF7\u6C42\u6B21\u6570\u7528\u5B8C");
+          err.fails = fails.length;
+          throw err;
+        };
         let calls = 0;
         while (s.scanned < to && calls < maxCalls && rpc.left > 6) {
           const from = s.scanned + 1;
@@ -1663,13 +1771,11 @@ async function runOnce(env) {
           calls++;
           let logs;
           try {
-            logs = await rpc.call("eth_getLogs", [
-              { address: c.miner, fromBlock: qty(from), toBlock: qty(end), topics: [[T_JOINED, T_DEPOSITED, T_WITHDRAWN]] }
-            ]);
+            logs = await getLogs(from, end);
           } catch (e) {
-            if (s.chunk > 500) {
-              s.chunk = Math.max(500, Math.floor(s.chunk / 2));
-              continue;
+            if (s.chunk > 50) {
+              s.chunk = Math.max(50, Math.floor(s.chunk / 4));
+              throw new Error("\u6240\u6709\u8282\u70B9\u90FD\u62D2\u7EDD\u4E86\u8FD9\u6B21\u67E5\u8BE2\uFF0C\u4E0B\u6B21\u7528\u66F4\u5C0F\u7684\u8303\u56F4\u91CD\u8BD5\uFF08" + e.message + "\uFF09");
             }
             throw e;
           }
@@ -1697,6 +1803,7 @@ async function runOnce(env) {
           const part = list.slice(j, j + batch);
           txs.push({ kind: "settle", to: c.miner, data: encodeSettleMany(part), count: part.length });
         }
+        if (txs.length) await save({ at: now }, true);
         const sent = await sendTxs(txs);
         for (const t of sent) {
           i += t.count;
@@ -1759,8 +1866,9 @@ function statusPage(s, env) {
   const row = (k, v) => rows.push(`<div class="row"><span>${esc(k)}</span><b>${v}</b></div>`);
   let pill = ["wait", "\u8FD8\u6CA1\u6709\u8FD0\u884C\u8FC7"];
   const hints = [];
-  if (!env.KEEPER_KEY) hints.push("\u8FD8\u6CA1\u6709\u8BBE\u7F6E\u5BC6\u94A5 KEEPER_KEY\uFF08\u8BBE\u7F6E \u2192 \u53D8\u91CF\u548C\u673A\u5BC6 \u2192 \u6DFB\u52A0 \u2192 \u7C7B\u578B\u9009\u201C\u5BC6\u94A5\u201D\uFF09\u3002");
-  if (!env.STATE) hints.push("\u8FD8\u6CA1\u6709\u7ED1\u5B9A KV \u5B58\u50A8\uFF0C\u53D8\u91CF\u540D\u5FC5\u987B\u662F STATE\uFF08\u8BBE\u7F6E \u2192 \u7ED1\u5B9A \u2192 \u6DFB\u52A0 \u2192 KV \u547D\u540D\u7A7A\u95F4\uFF09\u3002");
+  if (!env.STATE) hints.push("\u8FD8\u6CA1\u6709\u7ED1\u5B9A KV \u5B58\u50A8\uFF0C\u53D8\u91CF\u540D\u5FC5\u987B\u662F STATE\u3002");
+  if (st?.keeper && st.balance !== null && BigInt(st.balance) < 3n * 10n ** 15n)
+    hints.push(`\u8BF7\u5F80\u68C0\u67E5\u94B1\u5305 ${st.keeper} \u8F6C 0.01 BNB \u4F5C\u4E3A\u624B\u7EED\u8D39\uFF08\u53EA\u80FD\u8F6C BSC \u94FE\u4E0A\u7684 BNB\uFF09\uFF0C\u8F6C\u5165\u540E 1 \u5206\u949F\u5185\u81EA\u52A8\u5F00\u59CB\u5DE5\u4F5C\u3002`);
   if (st) {
     const fresh = nowS - st.at < 30 * 60;
     pill = st.ok && fresh ? ["ok", "\u6B63\u5E38\u8FD0\u884C"] : fresh ? ["warn", "\u6709\u95EE\u9898\uFF0C\u89C1\u4E0B\u65B9"] : ["warn", "\u8D85\u8FC7 30 \u5206\u949F\u6CA1\u6709\u8FD0\u884C"];
@@ -1780,7 +1888,7 @@ function statusPage(s, env) {
     );
     if (st.keeper) {
       row("\u68C0\u67E5\u94B1\u5305", `<a href="${esc(c.explorer)}/address/${esc(st.keeper)}" target="_blank">${esc(st.keeper.slice(0, 8) + "\u2026" + st.keeper.slice(-6))}</a>`);
-      const low = st.balance !== null && BigInt(st.balance) < 5n * 10n ** 15n;
+      const low = st.balance !== null && BigInt(st.balance) < 3n * 10n ** 15n;
       const d = daysLeft(s);
       row(
         "\u68C0\u67E5\u94B1\u5305\u4F59\u989D",
@@ -1804,8 +1912,8 @@ i{font-style:normal}.g{color:#127a39}.r{color:#c0392b}.hint{background:#fff7e6;b
 a{color:#1769aa}.foot{font-size:13px;color:#6b7c72;margin-top:14px}</style></head><body><div class="w">
 <h1>\u559C\u7F8A\u7F8A\u77FF\u573A \xB7 \u81EA\u52A8\u68C0\u67E5\u670D\u52A1</h1><div class="pill ${pill[0]}">${pill[1]}</div>
 ${hints.map((h) => `<div class="hint">${esc(h)}</div>`).join("")}
-<div class="card">${rows.join("") || '<div class="row"><b>\u8BBE\u7F6E\u597D\u4EE5\u540E\uFF0C\u6700\u591A\u7B49 10 \u5206\u949F\u5C31\u4F1A\u663E\u793A\u7B2C\u4E00\u6B21\u8FD0\u884C\u7ED3\u679C\u3002</b></div>'}</div>
-<p class="foot">\u8FD9\u4E2A\u9875\u9762\u53EA\u663E\u793A\u72B6\u6001\uFF0C\u4E0D\u80FD\u64CD\u4F5C\u4EFB\u4F55\u4E1C\u897F\u3002\u6BCF 10 \u5206\u949F\u81EA\u52A8\u8FD0\u884C\u4E00\u6B21\u3002</p></div></body></html>`;
+<div class="card">${rows.join("") || '<div class="row"><b>\u7B2C\u4E00\u6B21\u8FD0\u884C\u4F1A\u81EA\u52A8\u521B\u5EFA\u68C0\u67E5\u94B1\u5305\uFF0C1 \u5206\u949F\u5DE6\u53F3\u5C31\u4F1A\u663E\u793A\u7ED3\u679C\u3002</b></div>'}</div>
+<p class="foot">\u8FD9\u4E2A\u9875\u9762\u53EA\u663E\u793A\u72B6\u6001\uFF0C\u4E0D\u80FD\u64CD\u4F5C\u4EFB\u4F55\u4E1C\u897F\u3002\u6BCF\u5206\u949F\u81EA\u52A8\u8FD0\u884C\u4E00\u6B21\uFF08\u72B6\u6001\u6BCF 10 \u5206\u949F\u6216\u6709\u53D8\u5316\u65F6\u66F4\u65B0\uFF09\u3002</p></div></body></html>`;
 }
 {
   const k = new Uint8Array(32);
@@ -1824,6 +1932,102 @@ ${hints.map((h) => `<div class="hint">${esc(h)}</div>`).join("")}
   JSON.parse(JSON.stringify(users));
   settleList({ users });
 }
+var VERIFY = {
+  address: "0x363CBA25a4bC4617fAF017b1e0728f4AB7473E17",
+  creationTx: "0x299eedb51a8be6cfd6291a8a37aac56dbc72ba578be9c3793212eedecb74d79a",
+  input: "https://raw.githubusercontent.com/fengjinchehu91/pop-xiyangyang/main/contracts/verify/XiyangMiner-standard-input.json",
+  args: "https://raw.githubusercontent.com/fengjinchehu91/pop-xiyangyang/main/contracts/verify/constructor-args.txt",
+  name: "src/XiyangMiner.sol:XiyangMiner",
+  compiler: "0.8.26+commit.8a97fa7a"
+};
+async function verifyContract(url) {
+  const t = async (r) => `HTTP ${r.status} ${(await r.text()).slice(0, 600)}`;
+  const id = url.searchParams.get("id");
+  const key = url.searchParams.get("k");
+  const guid = url.searchParams.get("guid");
+  if (url.pathname.endsWith("/sourcify")) {
+    if (id) return t(await fetch(`https://sourcify.dev/server/v2/verify/${id}`));
+    const input2 = await (await fetch(VERIFY.input)).json();
+    return t(
+      await fetch(`https://sourcify.dev/server/v2/verify/56/${VERIFY.address}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ stdJsonInput: input2, compilerVersion: VERIFY.compiler, contractIdentifier: VERIFY.name, creationTransactionHash: VERIFY.creationTx })
+      })
+    );
+  }
+  if (!key) return "missing key";
+  const api = "https://api.etherscan.io/v2/api?chainid=56";
+  if (guid) return t(await fetch(`${api}&module=contract&action=checkverifystatus&guid=${encodeURIComponent(guid)}&apikey=${encodeURIComponent(key)}`));
+  const [input, args] = await Promise.all([fetch(VERIFY.input).then((r) => r.text()), fetch(VERIFY.args).then((r) => r.text())]);
+  const form = new URLSearchParams({
+    module: "contract",
+    action: "verifysourcecode",
+    apikey: key,
+    contractaddress: VERIFY.address,
+    sourceCode: input,
+    codeformat: "solidity-standard-json-input",
+    contractname: VERIFY.name,
+    compilerversion: "v" + VERIFY.compiler,
+    constructorArguements: args.trim(),
+    licenseType: "4"
+  });
+  return t(await fetch(`${api}&module=contract&action=verifysourcecode`, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: form }));
+}
+async function diag(env) {
+  const c = config(env);
+  const rpc = new Rpc(c.rpcs, 6);
+  const call = (to, sig, args = "") => ["eth_call", [{ to, data: "0x" + selector(sig) + args }, "latest"]];
+  const m = c.miner;
+  const names = ["POOL()", "REWARD_POOL()", "REWARD_V2()", "REWARD_VIA_POP()", "TWAP_WINDOW()", "MAX_VALUATION_AGE()", "minPoolLiquidity()", "minRewardPoolLiquidity()", "maxTickDeviation()", "obsCount()", "obsNext()", "lastValuationTime()", "valuePerRef()", "rewardPriceView()", "pauseReasons()", "accruing()", "lastCheckpointTime()", "TOKEN0()", "POP()", "USDT()", "REWARD()"];
+  const r1 = await rpc.batch([["eth_getBlockByNumber", ["latest", false]], ...names.map((n) => call(m, n))]);
+  const out = { now: Number(r1[0].result?.timestamp), miner: {} };
+  names.forEach((n, i) => out.miner[n] = r1[i + 1].result ?? r1[i + 1].error?.message);
+  const pool = "0x" + String(out.miner["POOL()"]).slice(-40);
+  const rp = "0x" + String(out.miner["REWARD_POOL()"]).slice(-40);
+  const tw = Number(big2(out.miner["TWAP_WINDOW()"]));
+  const obsArgs = word(32) + word(2) + word(tw) + word(0);
+  const q = [
+    call(pool, "slot0()"),
+    call(pool, "liquidity()"),
+    call(pool, "observe(uint32[])", obsArgs),
+    call(pool, "token0()"),
+    call(pool, "token1()"),
+    call(pool, "fee()"),
+    call(rp, "getReserves()"),
+    call(rp, "token0()"),
+    call(rp, "token1()"),
+    call(rp, "price0CumulativeLast()"),
+    call(rp, "price1CumulativeLast()")
+  ];
+  const r2 = await rpc.batch(q);
+  const keys = ["slot0", "liquidity", "observe", "token0", "token1", "fee", "rp.getReserves", "rp.token0", "rp.token1", "rp.p0cum", "rp.p1cum"];
+  out.pool = {};
+  keys.forEach((k, i) => out.pool[k] = r2[i].result ?? "ERR " + (r2[i].error?.message || "") + " " + (r2[i].error?.data || ""));
+  return out;
+}
+function statusJson(s) {
+  const st = s?.status || null;
+  return {
+    ran: !!st,
+    at: st?.at ?? null,
+    ok: st?.ok ?? false,
+    okAt: s?.okAt ?? null,
+    accruing: st?.accruing ?? null,
+    reasons: st?.reasons ?? null,
+    lastCheckpoint: st?.lastCheckpoint ?? null,
+    keeper: st?.keeper || s?.keeperAddr || null,
+    balance: st?.balance ?? null,
+    lowBalance: st?.balance != null ? BigInt(st.balance) < 3n * 10n ** 15n : null,
+    daysLeft: s ? daysLeft(s) : null,
+    users: st?.users ?? 0,
+    toSettle: st?.toSettle ?? 0,
+    settleHours: st?.settleHours ?? null,
+    lastSettle: s?.lastSettleTx?.at ?? null,
+    actions: st?.actions ?? [],
+    errors: st?.errors ?? []
+  };
+}
 var pageMemo = { t: 0, s: null };
 var worker_default = {
   async scheduled(event, env, ctx) {
@@ -1831,7 +2035,26 @@ var worker_default = {
   },
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (url.pathname !== "/") return new Response("Not found", { status: 404 });
+    const p = url.pathname.replace(/\/+$/, "") || "/";
+    if (p === "/keeper/diag") {
+      let body;
+      try {
+        body = JSON.stringify(await diag(env), null, 1);
+      } catch (e) {
+        body = "error " + (e?.message || e);
+      }
+      return new Response(body, { headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
+    }
+    if (p === "/keeper/verify/sourcify" || p === "/keeper/verify/bscscan") {
+      let body;
+      try {
+        body = await verifyContract(url);
+      } catch (e) {
+        body = "error " + (e?.message || e);
+      }
+      return new Response(body, { headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
+    }
+    if (p !== "/" && p !== "/keeper" && p !== "/keeper.json") return new Response("Not found", { status: 404 });
     let s = pageMemo.s;
     if (Date.now() - pageMemo.t > 2e4) {
       try {
@@ -1840,6 +2063,28 @@ var worker_default = {
         s = null;
       }
       if (s) pageMemo = { t: Date.now(), s };
+    }
+    if (p === "/keeper.json") {
+      const out = statusJson(s);
+      if (out.keeper) {
+        try {
+          const c = config(env);
+          const r = await new Rpc(c.rpcs, 3).batch([
+            ["eth_getBalance", [out.keeper, "latest"]],
+            ["eth_getTransactionCount", [out.keeper, "latest"]]
+          ]);
+          if (r[0].result) {
+            out.balanceNow = BigInt(r[0].result).toString();
+            out.balance = out.balanceNow;
+            out.lowBalance = BigInt(out.balanceNow) < 3n * 10n ** 15n;
+          }
+          if (r[1].result) out.txCount = Number(r[1].result);
+        } catch {
+        }
+      }
+      return new Response(JSON.stringify(out), {
+        headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }
+      });
     }
     return new Response(statusPage(s, env), {
       headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }
@@ -1855,5 +2100,6 @@ export {
   encodeSettleMany,
   runOnce,
   signLegacyTx,
+  statusJson,
   statusPage
 };

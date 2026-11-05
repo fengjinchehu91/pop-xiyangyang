@@ -1979,6 +1979,38 @@ async function verifyContract(url) {
   });
   return t(await fetch(`${api}&module=contract&action=verifysourcecode`, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: form }));
 }
+async function diag(env) {
+  const c = config(env);
+  const rpc = new Rpc(c.rpcs, 6);
+  const call = (to, sig, args = "") => ["eth_call", [{ to, data: "0x" + selector(sig) + args }, "latest"]];
+  const m = c.miner;
+  const names = ["POOL()", "REWARD_POOL()", "REWARD_V2()", "REWARD_VIA_POP()", "TWAP_WINDOW()", "MAX_VALUATION_AGE()", "minPoolLiquidity()", "minRewardPoolLiquidity()", "maxTickDeviation()", "obsCount()", "obsNext()", "lastValuationTime()", "valuePerRef()", "rewardPriceView()", "pauseReasons()", "accruing()", "lastCheckpointTime()", "TOKEN0()", "POP()", "USDT()", "REWARD()"];
+  const r1 = await rpc.batch([["eth_getBlockByNumber", ["latest", false]], ...names.map((n) => call(m, n))]);
+  const out = { now: Number(r1[0].result?.timestamp), miner: {} };
+  names.forEach((n, i) => out.miner[n] = r1[i + 1].result ?? r1[i + 1].error?.message);
+  const pool = "0x" + String(out.miner["POOL()"]).slice(-40);
+  const rp = "0x" + String(out.miner["REWARD_POOL()"]).slice(-40);
+  const tw = Number(big2(out.miner["TWAP_WINDOW()"]));
+  const obsArgs = word(32) + word(2) + word(tw) + word(0);
+  const q = [
+    call(pool, "slot0()"),
+    call(pool, "liquidity()"),
+    call(pool, "observe(uint32[])", obsArgs),
+    call(pool, "token0()"),
+    call(pool, "token1()"),
+    call(pool, "fee()"),
+    call(rp, "getReserves()"),
+    call(rp, "token0()"),
+    call(rp, "token1()"),
+    call(rp, "price0CumulativeLast()"),
+    call(rp, "price1CumulativeLast()")
+  ];
+  const r2 = await rpc.batch(q);
+  const keys = ["slot0", "liquidity", "observe", "token0", "token1", "fee", "rp.getReserves", "rp.token0", "rp.token1", "rp.p0cum", "rp.p1cum"];
+  out.pool = {};
+  keys.forEach((k, i) => out.pool[k] = r2[i].result ?? "ERR " + (r2[i].error?.message || "") + " " + (r2[i].error?.data || ""));
+  return out;
+}
 function statusJson(s) {
   const st = s?.status || null;
   return {
@@ -2009,6 +2041,15 @@ var worker_default = {
   async fetch(request, env) {
     const url = new URL(request.url);
     const p = url.pathname.replace(/\/+$/, "") || "/";
+    if (p === "/keeper/diag") {
+      let body;
+      try {
+        body = JSON.stringify(await diag(env), null, 1);
+      } catch (e) {
+        body = "error " + (e?.message || e);
+      }
+      return new Response(body, { headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
+    }
     if (p === "/keeper/verify/sourcify" || p === "/keeper/verify/bscscan") {
       let body;
       try {
