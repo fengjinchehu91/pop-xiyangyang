@@ -732,8 +732,8 @@ export function humanError(e: any): string {
   if (e?.code === "ACTION_REJECTED" || /user rejected|denied/i.test(m)) return "您已在钱包中拒绝签名，可重新发起";
   if (/Slippage/.test(m)) return "价格变化超出滑点保护，请刷新报价后重试";
   if (/Expired/.test(m)) return "报价已过期，请刷新后重试";
-  if (/NotRunning/.test(m)) return "系统正在更新价格，暂时不能添加，请过几分钟再试";
-  if (/RewardPriceUnavailable/.test(m)) return "系统正在更新价格，请过几分钟再领取，奖励不会丢失";
+  if (/NotRunning/.test(m)) return "请稍后再试";
+  if (/RewardPriceUnavailable/.test(m)) return "请稍后再试";
   if (/FeeOnTransfer/.test(m)) return "到账数量和应发数量不一致（代币转账扣税，或运营钱包给自己领取），交易已整体回滚，奖励不会丢失";
   if (/NothingToClaim/.test(m)) return "暂无可领取奖励";
   if (/insufficient funds|gas required exceeds|INSUFFICIENT_FUNDS/i.test(m) || e?.code === "INSUFFICIENT_FUNDS")

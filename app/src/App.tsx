@@ -1027,7 +1027,7 @@ function AddSheet({ cfg, snap, backend, refParam, account, canTx, close, done }:
           )}
         </div>
       )}
-      {waitNote && !snap.running && <p className="fine wait-note">系统正在更新价格，请过几分钟再添加，已有收益不受影响。</p>}
+      {waitNote && !snap.running && <p className="fine wait-note">请稍后再试</p>}
       {steps && <Steps steps={steps} />}
       {allDone ? (
         <button className="btn-green wide" onClick={close}>完成</button>
@@ -1124,6 +1124,7 @@ function ExitSheet({ snap, backend, account, canTx, close, done }: { snap: Snaps
 
 function ClaimSheet({ snap, live, backend, canTx, close, done }: { snap: Snapshot; live: Live | null; backend: Backend; canTx: boolean; close: () => void; done: () => void }) {
   const [steps, setSteps] = useState<Step[] | null>(null);
+  const [tip, setTip] = useState(false);
   const [running, setRunning] = useState(false);
   const est = live?.pendingTokens ?? null;
   const minOut = est ? applySlippage(est, SLIP_BPS) : null;
@@ -1131,10 +1132,11 @@ function ClaimSheet({ snap, live, backend, canTx, close, done }: { snap: Snapsho
     if (!minOut) return;
     const s: Step[] = [{ label: "领取喜羊羊（由运营钱包授权支付）", status: "idle" }];
     if (snap.rewardPriceEstimated) {
-      // the contract's price is refreshing: explain instead of sending (nothing is signed, nothing is lost)
-      setSteps([{ ...s[0], status: "error", error: "系统正在更新价格，请过几分钟再领取，奖励不会丢失" }]);
+      // the contract's price is refreshing: nothing is sent; just a short hint
+      setTip(true);
       return;
     }
+    setTip(false);
     setSteps(s);
     setRunning(true);
     try {
@@ -1166,6 +1168,7 @@ function ClaimSheet({ snap, live, backend, canTx, close, done }: { snap: Snapsho
         </div>
         <p className="fine">按领取时链上时间加权参考价把 USDT 计价额度换算为喜羊羊；网络手续费（BNB）由您支付。失败时整笔回滚，奖励不会丢失。</p>
       </div>
+      {tip && snap.rewardPriceEstimated && <p className="fine wait-note">请稍后再试</p>}
       {steps && <Steps steps={steps} />}
       {steps?.every((x) => x.status === "done") ? (
         <button className="btn-green wide" onClick={close}>完成</button>
