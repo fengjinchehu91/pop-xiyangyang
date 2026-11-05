@@ -1834,7 +1834,7 @@ async function runOnce(env) {
     if (loaded.ok && !stuck) {
       try {
         const to = head - c.confirmations;
-        const maxCalls = Math.max(1, Math.round(c.maxLogCalls * load));
+        const maxCalls = s.rebuilding ? Math.max(1, Math.round(30 * load)) : Math.max(1, Math.round(c.maxLogCalls * load));
         if (!s.chunk || s.chunk > c.logChunk) s.chunk = c.logChunk;
         const order = [...c.logRpcs].sort((a, b) => a === s.logsUrl ? -1 : b === s.logsUrl ? 1 : 0);
         const getLogs = async (from, end) => {
@@ -1870,6 +1870,7 @@ async function runOnce(env) {
           try {
             logs = await getLogs(from, end);
           } catch (e) {
+            s.chunkOk = 0;
             if (s.chunk > 50) {
               s.chunk = Math.max(50, Math.floor(s.chunk / 4));
               throw new Error("\u6240\u6709\u8282\u70B9\u90FD\u62D2\u7EDD\u4E86\u8FD9\u6B21\u67E5\u8BE2\uFF0C\u4E0B\u6B21\u7528\u66F4\u5C0F\u7684\u8303\u56F4\u91CD\u8BD5\uFF08" + e.message + "\uFF09");
@@ -1878,6 +1879,11 @@ async function runOnce(env) {
           }
           for (const l of logs) applyLog(s.users, l);
           s.scanned = end;
+          s.chunkOk = (s.chunkOk || 0) + 1;
+          if (s.chunk < c.logChunk && s.chunkOk >= 4) {
+            s.chunk = Math.min(c.logChunk, s.chunk * 2);
+            s.chunkOk = 0;
+          }
         }
         if (s.scanned < to) st.actions.push(`\u6B63\u5728\u8BFB\u53D6\u5386\u53F2\u8BB0\u5F55\uFF08\u8FD8\u5DEE\u7EA6 ${to - s.scanned} \u4E2A\u533A\u5757\uFF09`);
         else if (s.rebuilding) {

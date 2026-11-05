@@ -667,7 +667,8 @@ export async function runOnce(env) {
 
       try {
         const to = head - c.confirmations;
-        const maxCalls = Math.max(1, Math.round(c.maxLogCalls * load));
+        // while re-reading the whole history, use most of this run's request budget for it
+        const maxCalls = s.rebuilding ? Math.max(1, Math.round(30 * load)) : Math.max(1, Math.round(c.maxLogCalls * load));
         if (!s.chunk || s.chunk > c.logChunk) s.chunk = c.logChunk;
         // preferred node first (the one that worked last time), then the others
         const order = [...c.logRpcs].sort((a, b) => (a === s.logsUrl ? -1 : b === s.logsUrl ? 1 : 0));
@@ -704,6 +705,7 @@ export async function runOnce(env) {
           try {
             logs = await getLogs(from, end);
           } catch (e) {
+            s.chunkOk = 0;
             if (s.chunk > 50) {
               s.chunk = Math.max(50, Math.floor(s.chunk / 4)); // every node refused this range: use smaller steps
               throw new Error("所有节点都拒绝了这次查询，下次用更小的范围重试（" + e.message + "）");
@@ -712,6 +714,12 @@ export async function runOnce(env) {
           }
           for (const l of logs) applyLog(s.users, l);
           s.scanned = end;
+          // after a node refused a big range the step was made smaller; grow it back after a few good answers
+          s.chunkOk = (s.chunkOk || 0) + 1;
+          if (s.chunk < c.logChunk && s.chunkOk >= 4) {
+            s.chunk = Math.min(c.logChunk, s.chunk * 2);
+            s.chunkOk = 0;
+          }
         }
         if (s.scanned < to) st.actions.push(`正在读取历史记录（还差约 ${to - s.scanned} 个区块）`);
         else if (s.rebuilding) {
