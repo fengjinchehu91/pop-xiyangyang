@@ -1130,7 +1130,7 @@ function ClaimSheet({ snap, live, backend, canTx, close, done }: { snap: Snapsho
   const minOut = est ? applySlippage(est, SLIP_BPS) : null;
   const go = async () => {
     if (!minOut) return;
-    const s: Step[] = [{ label: "领取喜羊羊（由运营钱包授权支付）", status: "idle" }];
+    const s: Step[] = [{ label: "领取喜羊羊", status: "idle" }];
     if (snap.rewardPriceEstimated) {
       // the contract's price is refreshing: nothing is sent; just a short hint
       setTip(true);
