@@ -212,8 +212,8 @@ function Header({ cfg, account, onConnect, snap }: { cfg: AppConfig; account: st
       </div>
       <div className="hdr-r">
         <span className="chip-bsc">
-          <IconBnb />
-          {cfg.chainId === 56 ? "BSC" : `链 ${cfg.chainId}`}
+          <i className="chip-ic"><IconBnb /></i>
+          <b>{cfg.chainId === 56 ? "BSC" : `链 ${cfg.chainId}`}</b>
         </span>
         <button className="wallet-btn" onClick={onConnect}>
           {account ? short(account) : "连接钱包"}
