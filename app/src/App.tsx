@@ -574,7 +574,7 @@ function ReferPage({ cfg, snap, live, account, backend, onConnect, toast }: { cf
       <section className="card invite">
         <div className="invite-txt">
           <b>邀请好友加入喜羊羊矿场</b>
-          <p className="fine">分享链接，好友首次添加流动性时确认绑定，之后可产生动态收益。</p>
+          <p className="fine">分享链接，好友打开后绑定你为推荐人，之后可产生动态收益。</p>
         </div>
         <img src={A("sheep-safe.png")} alt="" className="invite-img" />
         <div className="link-row">

@@ -144,8 +144,9 @@ a { color: var(--g6); }
 .invite { display: grid; grid-template-columns: 1fr 96px; gap: 8px; }
 .invite-txt b { font-size: 16px; }
 .invite-img { width: 96px; align-self: start; }
-.link-row { grid-column: 1 / -1; display: flex; gap: 8px; align-items: center; background: var(--cream2); border-radius: 12px; padding: 6px 6px 6px 10px; }
-.link-txt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--muted); }
+.link-row { grid-column: 1 / -1; display: flex; flex-direction: column; align-items: stretch; gap: 10px; background: var(--cream2); border-radius: 14px; padding: 12px; }
+.link-txt { display: block; white-space: normal; word-break: break-all; overflow-wrap: anywhere; font-size: 14px; line-height: 1.55; color: var(--ink); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; -webkit-user-select: all; user-select: all; }
+.link-row .btn-green.sm { width: 100%; min-height: 46px; font-size: 15px; }
 .qr { grid-column: 1 / -1; display: flex; flex-direction: column; align-items: center; gap: 4px; margin-top: 6px; }
 .qr svg { width: 148px; height: 148px; border-radius: 10px; border: 1px solid var(--line); }
 .counts { display: grid; grid-template-columns: repeat(4, 1fr); text-align: center; padding: 12px 6px; }
