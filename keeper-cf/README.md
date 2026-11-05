@@ -1,6 +1,6 @@
 # 自动检查服务（Cloudflare Workers 版）
 
-放在 Cloudflare 上运行，不需要服务器。每 10 分钟自动运行一次：
+放在 Cloudflare 上运行，不需要服务器。每分钟自动运行一次：
 
 1. **更新价格并检查**（调用合约 `checkpoint()`）：上次检查超过 25 分钟就做一次；如果合约的运行状态需要变化（运营钱包喜羊羊不够要暂停，或者补够了要恢复），这一次马上做。
 2. **结算推荐奖励**（调用合约 `settleMany()`）：给“有推荐人、有本金”的钱包结算，让上级的动态收益到账。人少时每小时一次，人越多间隔越长（20 个钱包以内每小时，100 个约每 5 小时，480 个以上每天一次），手续费基本不会随人数一直涨。
@@ -11,7 +11,7 @@
 
 ## 现在的部署方式
 
-和网站是同一个 Cloudflare Worker（`pop-xiyangyang`），由仓库根目录的 `wrangler.jsonc` 配置：网站文件在 `site/`，程序是 `keeper-cf/dist/worker.js`，每 10 分钟的定时任务和 KV 存储（`STATE`，首次部署时自动创建）都写在配置里。往 GitHub 推送后 Cloudflare 自动重新部署，不需要进后台设置。状态页：`你的域名/keeper`。
+和网站是同一个 Cloudflare Worker（`pop-xiyangyang`），由仓库根目录的 `wrangler.jsonc` 配置：网站文件在 `site/`，程序是 `keeper-cf/dist/worker.js`，每分钟一次的定时任务和 KV 存储（`STATE`，首次部署时自动创建）都写在配置里。往 GitHub 推送后 Cloudflare 自动重新部署，不需要进后台设置。状态页：`你的域名/keeper`。
 
 ## 文件
 

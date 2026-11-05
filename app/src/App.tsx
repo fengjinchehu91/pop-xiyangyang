@@ -1001,7 +1001,7 @@ function RulesSheet({ snap, close }: { snap: Snapshot | null; close: () => void 
         <p><b>奖励基数：</b>您存入流动性本金的当前 USDT 参考价值（按池子时间加权价格），不含待领取奖励和未领取手续费。</p>
         <p><b>每日总额度：</b>奖励基数的 {pct(pr.rateBps)}，按实际持有时间累计，不自动复利。其中本人 {pct(pr.personalBps)}，第一个有效上级 {pct(pr.tier1Bps)}，第二个有效上级 {pct(pr.tier2Bps)}（包含在每日总额度之内）。管理员调整参数只影响调整之后，已累计的收益不变。</p>
         <p><b>计价与领取：</b>奖励按 USDT 计价记账，领取时按喜羊羊「30 分钟平均价」和「现价」中较高的那个换算，由您手动领取并支付 BNB 网络费。页面数字每 3 秒更新一次预计值，不代表链上交易。</p>
-        <p><b>估值更新：</b>系统约每 10 分钟做一次链上检查；两次检查之间按上一次估值计息；超过 2 小时没有有效估值会自动停止计息，恢复后不补计。</p>
+        <p><b>估值更新：</b>系统每分钟自动检查，约每 25 分钟更新一次估值（需要暂停或恢复时立即更新）；两次检查之间按上一次估值计息；超过 2 小时没有有效估值会自动停止计息，恢复后不补计。</p>
         <p><b>暂停：</b>运营钱包储备/授权不足、报价失效或管理员暂停时，停止新增入金和新增计息；已累计奖励保留；随时可以退出本金。</p>
         <p><b>动态资格：</b>本人 LP 参考价值 ≥ {usd0(pr.thresholdUsd)} USDT。资格在下级每次结算时判定（下级操作或系统定期结算）；您自己退出导致失效时，从退出那一刻起停止获得动态奖励；恢复后不追溯。</p>
         <p><b>退出：</b>固定返还 POP + USDT 及该仓位手续费，不保证等于原入金金额。</p>
@@ -1041,7 +1041,7 @@ function KeeperCard({ cfg }: { cfg: AppConfig }) {
   const now = Date.now() / 1000;
   const fresh = !!k.at && now - k.at < 30 * 60;
   const bnb = k.balance !== null ? Number(BigInt(k.balance) / 10n ** 12n) / 1e6 : null;
-  const state = !k.ran ? ["wait", "还没开始运行（最多等 10 分钟）"] : k.lowBalance ? ["warn", "等待充值手续费"] : k.ok && fresh ? ["ok", "正常运行，每 10 分钟自动检查"] : ["warn", fresh ? "有问题，见下方" : "超过 30 分钟没有运行"];
+  const state = !k.ran ? ["wait", "还没开始运行（1 分钟左右）"] : k.lowBalance ? ["warn", "等待充值手续费"] : k.ok && fresh ? ["ok", "正常运行，每分钟自动检查"] : ["warn", fresh ? "有问题，见下方" : "超过 30 分钟没有运行"];
   return (
     <section className="card kv">
       <b>自动检查服务</b>
@@ -1062,7 +1062,7 @@ function KeeperCard({ cfg }: { cfg: AppConfig }) {
       <div><span>推荐奖励自动结算</span><b>{k.lastSettle ? `最近 ${fmtTime(k.lastSettle)}` : "还没有需要结算的"}{k.settleHours ? ` · 约每 ${Math.round(k.settleHours * 10) / 10} 小时` : ""}</b></div>
       {k.lowBalance && k.keeper && (
         <div className="alert warn">
-          请用任意钱包往下面这个检查钱包地址转 <b className="nowrap">0.01 BNB</b>（BSC 链），转入后 10 分钟内自动开始工作。这个钱包只用来付检查的手续费，没有任何其他权限。
+          请用任意钱包往下面这个检查钱包地址转 <b className="nowrap">0.01 BNB</b>（BSC 链），转入后 1 分钟内自动开始工作。这个钱包只用来付检查的手续费，没有任何其他权限。
           <span className="addr-full mono">{k.keeper}</span>
         </div>
       )}

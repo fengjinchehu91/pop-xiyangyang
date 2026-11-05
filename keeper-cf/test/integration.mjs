@@ -159,6 +159,7 @@ check("exited wallet dropped from settle list", s.users[a1][0] === "0" && s.stat
 // 10b) a run cut off half-way (e.g. CPU limit) is noticed and the next runs do less
 const saved = JSON.parse(kv.get("state"));
 saved.busy = { at: saved.status.at };
+saved.seq = (saved.seq || 0) + 5; // newer than this isolate's own copy, like a run elsewhere that was cut off
 kv.set("state", JSON.stringify(saved));
 warp(600);
 s = await run("run 12 (previous run was cut off)");
@@ -172,7 +173,7 @@ check("automatic settle interval", autoSettleHours(10) === 1 && autoSettleHours(
 const bad = await runOnce({ ...env, KEEPER_KEY: OPERATOR_KEY, STATE: { get: async () => null, put: async () => {} } });
 check("refuses to run with the operator/admin key", bad.status.errors.some((e) => e.includes("运营/管理员钱包")));
 const bad2 = await runOnce({ ...env, KEEPER_KEY: "", STATE: { get: async () => null, put: async () => {} } });
-check("explains a missing key", bad2.status.errors.some((e) => e.includes("还没有设置 KEEPER_KEY")));
+check("without KEEPER_KEY it creates its own wallet", !!bad2.generatedAddr && bad2.status.keeper === bad2.generatedAddr);
 const bad3 = await runOnce({ ...env, STATE: undefined });
 check("without KV: still checkpoints when due, does not settle", bad3.status.errors.some((e) => e.includes("STATE")));
 

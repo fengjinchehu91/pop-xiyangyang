@@ -1490,10 +1490,12 @@ function freshState(c) {
     status: null
   };
 }
+var memState = null;
 async function loadState(env, c) {
   if (!env.STATE || typeof env.STATE.get !== "function") return { ok: false, why: "\u8FD8\u6CA1\u6709\u7ED1\u5B9A KV\uFF08\u53D8\u91CF\u540D STATE\uFF09", s: freshState(c) };
   try {
-    const s = await env.STATE.get("state", "json");
+    let s = await env.STATE.get("state", "json");
+    if (memState && memState.miner === c.miner && (!s || (memState.seq || 0) >= (s.seq || 0))) s = JSON.parse(JSON.stringify(memState));
     if (!s || s.v !== 1 || s.miner !== c.miner) return { ok: true, s: freshState(c) };
     return { ok: true, s };
   } catch (e) {
@@ -1580,15 +1582,35 @@ async function runOnce(env) {
   }
   const load = loaded.ok && s.load || 1;
   const rpc = new Rpc(c.rpcs, SUBREQUEST_BUDGET);
-  const save = async (busy) => {
+  const fingerprint = (x) => {
+    const t = x.status || {};
+    return JSON.stringify({
+      ...x,
+      scanned: 0,
+      // re-reading a few blocks next run is harmless; new users change `users` and force a write
+      okAt: 0,
+      savedAt: 0,
+      seq: 0,
+      load: Math.round((x.load || 1) * 4),
+      status: { ok: t.ok, errors: t.errors, actions: t.actions, accruing: t.accruing, reasons: t.reasons, keeper: t.keeper, users: t.users, toSettle: t.toSettle }
+    });
+  };
+  const fp0 = loaded.ok ? fingerprint(s) : null;
+  const save = async (busy, force = false) => {
     if (!loaded.ok) return;
     s.busy = busy;
     s.status = st;
-    try {
-      await env.STATE.put("state", JSON.stringify(s));
-    } catch (e) {
-      st.errors.push("\u4FDD\u5B58 KV \u5931\u8D25\uFF1A" + (e?.message || e));
+    const nowS = Math.floor(Date.now() / 1e3);
+    if (force || fingerprint(s) !== fp0 || nowS - (s.savedAt || 0) >= 600) {
+      s.savedAt = nowS;
+      s.seq = (s.seq || 0) + 1;
+      try {
+        await env.STATE.put("state", JSON.stringify(s));
+      } catch (e) {
+        st.errors.push("\u4FDD\u5B58 KV \u5931\u8D25\uFF1A" + (e?.message || e));
+      }
     }
+    memState = JSON.parse(JSON.stringify(s));
   };
   try {
     const { key, addr: me } = await resolveKey(env, loaded, s);
@@ -1718,7 +1740,6 @@ async function runOnce(env) {
     }
     st.gasPrice = gasPrice.toString();
     if (loaded.ok && !stuck) {
-      await save({ at: now });
       try {
         const to = head - c.confirmations;
         const maxCalls = Math.max(1, Math.round(c.maxLogCalls * load));
@@ -1787,6 +1808,7 @@ async function runOnce(env) {
           const part = list.slice(j, j + batch);
           txs.push({ kind: "settle", to: c.miner, data: encodeSettleMany(part), count: part.length });
         }
+        if (txs.length) await save({ at: now }, true);
         const sent = await sendTxs(txs);
         for (const t of sent) {
           i += t.count;
@@ -1851,7 +1873,7 @@ function statusPage(s, env) {
   const hints = [];
   if (!env.STATE) hints.push("\u8FD8\u6CA1\u6709\u7ED1\u5B9A KV \u5B58\u50A8\uFF0C\u53D8\u91CF\u540D\u5FC5\u987B\u662F STATE\u3002");
   if (st?.keeper && st.balance !== null && BigInt(st.balance) < 3n * 10n ** 15n)
-    hints.push(`\u8BF7\u5F80\u68C0\u67E5\u94B1\u5305 ${st.keeper} \u8F6C 0.01 BNB \u4F5C\u4E3A\u624B\u7EED\u8D39\uFF08\u53EA\u80FD\u8F6C BSC \u94FE\u4E0A\u7684 BNB\uFF09\uFF0C\u8F6C\u5165\u540E 10 \u5206\u949F\u5185\u81EA\u52A8\u5F00\u59CB\u5DE5\u4F5C\u3002`);
+    hints.push(`\u8BF7\u5F80\u68C0\u67E5\u94B1\u5305 ${st.keeper} \u8F6C 0.01 BNB \u4F5C\u4E3A\u624B\u7EED\u8D39\uFF08\u53EA\u80FD\u8F6C BSC \u94FE\u4E0A\u7684 BNB\uFF09\uFF0C\u8F6C\u5165\u540E 1 \u5206\u949F\u5185\u81EA\u52A8\u5F00\u59CB\u5DE5\u4F5C\u3002`);
   if (st) {
     const fresh = nowS - st.at < 30 * 60;
     pill = st.ok && fresh ? ["ok", "\u6B63\u5E38\u8FD0\u884C"] : fresh ? ["warn", "\u6709\u95EE\u9898\uFF0C\u89C1\u4E0B\u65B9"] : ["warn", "\u8D85\u8FC7 30 \u5206\u949F\u6CA1\u6709\u8FD0\u884C"];
@@ -1895,8 +1917,8 @@ i{font-style:normal}.g{color:#127a39}.r{color:#c0392b}.hint{background:#fff7e6;b
 a{color:#1769aa}.foot{font-size:13px;color:#6b7c72;margin-top:14px}</style></head><body><div class="w">
 <h1>\u559C\u7F8A\u7F8A\u77FF\u573A \xB7 \u81EA\u52A8\u68C0\u67E5\u670D\u52A1</h1><div class="pill ${pill[0]}">${pill[1]}</div>
 ${hints.map((h) => `<div class="hint">${esc(h)}</div>`).join("")}
-<div class="card">${rows.join("") || '<div class="row"><b>\u7B2C\u4E00\u6B21\u8FD0\u884C\u4F1A\u81EA\u52A8\u521B\u5EFA\u68C0\u67E5\u94B1\u5305\uFF0C\u6700\u591A\u7B49 10 \u5206\u949F\u5C31\u4F1A\u663E\u793A\u7ED3\u679C\u3002</b></div>'}</div>
-<p class="foot">\u8FD9\u4E2A\u9875\u9762\u53EA\u663E\u793A\u72B6\u6001\uFF0C\u4E0D\u80FD\u64CD\u4F5C\u4EFB\u4F55\u4E1C\u897F\u3002\u6BCF 10 \u5206\u949F\u81EA\u52A8\u8FD0\u884C\u4E00\u6B21\u3002</p></div></body></html>`;
+<div class="card">${rows.join("") || '<div class="row"><b>\u7B2C\u4E00\u6B21\u8FD0\u884C\u4F1A\u81EA\u52A8\u521B\u5EFA\u68C0\u67E5\u94B1\u5305\uFF0C1 \u5206\u949F\u5DE6\u53F3\u5C31\u4F1A\u663E\u793A\u7ED3\u679C\u3002</b></div>'}</div>
+<p class="foot">\u8FD9\u4E2A\u9875\u9762\u53EA\u663E\u793A\u72B6\u6001\uFF0C\u4E0D\u80FD\u64CD\u4F5C\u4EFB\u4F55\u4E1C\u897F\u3002\u6BCF\u5206\u949F\u81EA\u52A8\u8FD0\u884C\u4E00\u6B21\uFF08\u72B6\u6001\u6BCF 10 \u5206\u949F\u6216\u6709\u53D8\u5316\u65F6\u66F4\u65B0\uFF09\u3002</p></div></body></html>`;
 }
 {
   const k = new Uint8Array(32);

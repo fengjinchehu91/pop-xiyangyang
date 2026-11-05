@@ -1,9 +1,9 @@
 // 喜羊羊矿场 · 自动检查服务（Cloudflare Workers 版）
 //
-// Runs on a Cloudflare Cron Trigger (every 10 minutes). Each run:
+// Runs on a Cloudflare Cron Trigger (every minute). Each run:
 //   1. reads the contract state with one batched JSON-RPC request;
 //   2. sends checkpoint() when the last checkpoint is older than CHECK_MINUTES, or when the running state would
-//      change (e.g. the reserve became too low, or it recovered) so pauses / resumes happen within ~10 minutes;
+//      change (e.g. the reserve became too low, or it recovered) so pauses / resumes happen within ~1 minute;
 //   3. once per SETTLE_HOURS, sends settleMany() for every wallet that has a referrer and an open position, so that
 //      referral (dynamic) rewards show up for the uplines without anyone clicking anything.
 //
@@ -277,10 +277,13 @@ function freshState(c) {
   };
 }
 
+let memState = null; // last state of this isolate (may hold progress that was not written to KV yet)
+
 async function loadState(env, c) {
   if (!env.STATE || typeof env.STATE.get !== "function") return { ok: false, why: "还没有绑定 KV（变量名 STATE）", s: freshState(c) };
   try {
-    const s = await env.STATE.get("state", "json");
+    let s = await env.STATE.get("state", "json");
+    if (memState && memState.miner === c.miner && (!s || (memState.seq || 0) >= (s.seq || 0))) s = JSON.parse(JSON.stringify(memState));
     if (!s || s.v !== 1 || s.miner !== c.miner) return { ok: true, s: freshState(c) };
     return { ok: true, s };
   } catch (e) {
@@ -381,15 +384,34 @@ export async function runOnce(env) {
   }
   const load = (loaded.ok && s.load) || 1;
   const rpc = new Rpc(c.rpcs, SUBREQUEST_BUDGET);
-  const save = async (busy) => {
+  const fingerprint = (x) => {
+    const t = x.status || {};
+    return JSON.stringify({
+      ...x,
+      scanned: 0, // re-reading a few blocks next run is harmless; new users change `users` and force a write
+      okAt: 0,
+      savedAt: 0,
+      seq: 0,
+      load: Math.round((x.load || 1) * 4),
+      status: { ok: t.ok, errors: t.errors, actions: t.actions, accruing: t.accruing, reasons: t.reasons, keeper: t.keeper, users: t.users, toSettle: t.toSettle },
+    });
+  };
+  const fp0 = loaded.ok ? fingerprint(s) : null;
+  const save = async (busy, force = false) => {
     if (!loaded.ok) return;
     s.busy = busy;
     s.status = st;
-    try {
-      await env.STATE.put("state", JSON.stringify(s));
-    } catch (e) {
-      st.errors.push("保存 KV 失败：" + (e?.message || e));
+    const nowS = Math.floor(Date.now() / 1000);
+    if (force || fingerprint(s) !== fp0 || nowS - (s.savedAt || 0) >= 600) {
+      s.savedAt = nowS;
+      s.seq = (s.seq || 0) + 1;
+      try {
+        await env.STATE.put("state", JSON.stringify(s));
+      } catch (e) {
+        st.errors.push("保存 KV 失败：" + (e?.message || e));
+      }
     }
+    memState = JSON.parse(JSON.stringify(s));
   };
 
   try {
@@ -534,7 +556,6 @@ export async function runOnce(env) {
 
     // ---- 3. optional work: discover wallets, then settle referral rewards
     if (loaded.ok && !stuck) {
-      await save({ at: now }); // if this run is cut off below, the next run sees "busy" and does less
 
       try {
         const to = head - c.confirmations;
@@ -606,6 +627,7 @@ export async function runOnce(env) {
           const part = list.slice(j, j + batch);
           txs.push({ kind: "settle", to: c.miner, data: encodeSettleMany(part), count: part.length });
         }
+        if (txs.length) await save({ at: now }, true); // if this run is cut off now, the next run notices and does less
         const sent = await sendTxs(txs);
         for (const t of sent) {
           i += t.count;
@@ -678,7 +700,7 @@ export function statusPage(s, env) {
   const hints = [];
   if (!env.STATE) hints.push("还没有绑定 KV 存储，变量名必须是 STATE。");
   if (st?.keeper && st.balance !== null && BigInt(st.balance) < 3n * 10n ** 15n)
-    hints.push(`请往检查钱包 ${st.keeper} 转 0.01 BNB 作为手续费（只能转 BSC 链上的 BNB），转入后 10 分钟内自动开始工作。`);
+    hints.push(`请往检查钱包 ${st.keeper} 转 0.01 BNB 作为手续费（只能转 BSC 链上的 BNB），转入后 1 分钟内自动开始工作。`);
   if (st) {
     const fresh = nowS - st.at < 30 * 60;
     pill = st.ok && fresh ? ["ok", "正常运行"] : fresh ? ["warn", "有问题，见下方"] : ["warn", "超过 30 分钟没有运行"];
@@ -726,8 +748,8 @@ i{font-style:normal}.g{color:#127a39}.r{color:#c0392b}.hint{background:#fff7e6;b
 a{color:#1769aa}.foot{font-size:13px;color:#6b7c72;margin-top:14px}</style></head><body><div class="w">
 <h1>喜羊羊矿场 · 自动检查服务</h1><div class="pill ${pill[0]}">${pill[1]}</div>
 ${hints.map((h) => `<div class="hint">${esc(h)}</div>`).join("")}
-<div class="card">${rows.join("") || '<div class="row"><b>第一次运行会自动创建检查钱包，最多等 10 分钟就会显示结果。</b></div>'}</div>
-<p class="foot">这个页面只显示状态，不能操作任何东西。每 10 分钟自动运行一次。</p></div></body></html>`;
+<div class="card">${rows.join("") || '<div class="row"><b>第一次运行会自动创建检查钱包，1 分钟左右就会显示结果。</b></div>'}</div>
+<p class="foot">这个页面只显示状态，不能操作任何东西。每分钟自动运行一次（状态每 10 分钟或有变化时更新）。</p></div></body></html>`;
 }
 
 // ------------------------------------------------------------------ start-up warm-up
