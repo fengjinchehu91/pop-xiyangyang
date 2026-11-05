@@ -714,8 +714,12 @@ function Steps({ steps }: { steps: Step[] }) {
 }
 
 function AddSheet({ cfg, snap, backend, refParam, account, canTx, close, done }: { cfg: AppConfig; snap: Snapshot; backend: Backend; refParam: string; account: string; canTx: boolean; close: () => void; done: () => void }) {
-  const mode = "usdt" as const; // deposits are USDT only (half is swapped to POP inside the contract)
+  // 仅 USDT：合约把约一半换成 POP；USDT + POP：自带两种币，按池子价格自动配比
+  const [mode, setMode] = useState<"usdt" | "both">("usdt");
   const [usdtIn, setUsdtIn] = useState("");
+  const [popIn, setPopIn] = useState("");
+  const [pairing, setPairing] = useState(false);
+  const pairSeq = useRef(0);
   const [q, setQ] = useState<AddQuote | null>(null);
   const [qErr, setQErr] = useState("");
   const [steps, setSteps] = useState<Step[] | null>(null);
@@ -739,13 +743,53 @@ function AddSheet({ cfg, snap, backend, refParam, account, canTx, close, done }:
     return () => clearInterval(id);
   }, []);
   const usdtAmt = parseUnitsSafe(usdtIn, snap.usdtDecimals);
-  const popAmt = 0n;
+  const popAmt = mode === "both" ? parseUnitsSafe(popIn, snap.popDecimals) : 0n;
   const overU = usdtAmt !== null && snap.balances && usdtAmt > snap.balances.usdt;
+  const overP = mode === "both" && popAmt !== null && snap.balances && popAmt > snap.balances.pop;
+  const plain = (v: bigint, d: number) => fmtUnits(v, d, 6).replace(/,/g, "").replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
+  // 改一边，另一边按池子当前价格自动算出来
+  const fillOther = (from: "usdt" | "pop", text: string) => {
+    if (from === "usdt") setUsdtIn(text);
+    else setPopIn(text);
+    if (mode !== "both") return;
+    const amt = parseUnitsSafe(text, from === "usdt" ? snap.usdtDecimals : snap.popDecimals);
+    const seq = ++pairSeq.current;
+    if (!amt || amt === 0n) {
+      if (from === "usdt") setPopIn("");
+      else setUsdtIn("");
+      return;
+    }
+    setPairing(true);
+    backend
+      .pairAmount(from, amt)
+      .then((o) => {
+        if (seq !== pairSeq.current) return;
+        if (from === "usdt") setPopIn(plain(o, snap.popDecimals));
+        else setUsdtIn(plain(o, snap.usdtDecimals));
+      })
+      .catch(() => {})
+      .finally(() => seq === pairSeq.current && setPairing(false));
+  };
+  const switchMode = (m: "usdt" | "both") => {
+    setMode(m);
+    setPopIn("");
+    pairSeq.current++;
+    setPairing(false);
+    if (m === "both" && usdtAmt && usdtAmt > 0n) {
+      const seq = pairSeq.current;
+      setPairing(true);
+      backend
+        .pairAmount("usdt", usdtAmt)
+        .then((o) => seq === pairSeq.current && setPopIn(plain(o, snap.popDecimals)))
+        .catch(() => {})
+        .finally(() => seq === pairSeq.current && setPairing(false));
+    }
+  };
   const timer = useRef<any>(null);
   useEffect(() => {
     setQ(null);
     setQErr("");
-    if (!usdtAmt || usdtAmt === 0n) return;
+    if (!usdtAmt || usdtAmt === 0n || popAmt === null || (mode === "both" && (popAmt === 0n || pairing))) return;
     clearTimeout(timer.current);
     timer.current = setTimeout(() => {
       backend
@@ -753,7 +797,7 @@ function AddSheet({ cfg, snap, backend, refParam, account, canTx, close, done }:
         .then(setQ)
         .catch((e) => setQErr("报价失败：" + humanError(e)));
     }, 400);
-  }, [usdtIn]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [usdtIn, popIn, mode, pairing]); // eslint-disable-line react-hooks/exhaustive-deps
   const expired = q ? now - q.createdAt > QUOTE_TTL : false;
   const needConfirmRef = !!useRef_ && !okRef;
   const go = async () => {
@@ -780,18 +824,44 @@ function AddSheet({ cfg, snap, backend, refParam, account, canTx, close, done }:
   void cfg;
   return (
     <Sheet title="添加流动性" close={close} icon={<span className="ic-c">⊕</span>}>
+      <div className="seg">
+        <button className={mode === "usdt" ? "on" : ""} onClick={() => switchMode("usdt")} disabled={running}>
+          仅 USDT
+        </button>
+        <button className={mode === "both" ? "on" : ""} onClick={() => switchMode("both")} disabled={running}>
+          USDT + POP
+        </button>
+      </div>
       <label className="inp">
         <span>
           USDT 数量 <em>余额 {fmtUnits(snap.balances?.usdt ?? null, snap.usdtDecimals)}</em>
         </span>
         <div className="inp-row">
-          <input inputMode="decimal" placeholder="0.00" value={usdtIn} onChange={(e) => setUsdtIn(e.target.value)} disabled={running} />
-          <button className="btn-mini" onClick={() => { if (!snap.balances) return; setUsdtIn(fmtUnits(snap.balances.usdt, snap.usdtDecimals, 6).replace(/,/g, "")); }}>
+          <input inputMode="decimal" placeholder="0.00" value={usdtIn} onChange={(e) => fillOther("usdt", e.target.value)} disabled={running} />
+          <button className="btn-mini" onClick={() => { if (!snap.balances) return; fillOther("usdt", plain(snap.balances.usdt, snap.usdtDecimals)); }}>
             全部
           </button>
         </div>
-        {overU && <em className="err">余额不足</em>}
+        {overU && <em className="err">USDT 余额不足</em>}
       </label>
+      {mode === "both" && (
+        <label className="inp">
+          <span>
+            POP 数量 <em>余额 {fmtUnits(snap.balances?.pop ?? null, snap.popDecimals)}</em>
+          </span>
+          <div className="inp-row">
+            <input inputMode="decimal" placeholder="0.00" value={popIn} onChange={(e) => fillOther("pop", e.target.value)} disabled={running} />
+            <button className="btn-mini" onClick={() => { if (!snap.balances) return; fillOther("pop", plain(snap.balances.pop, snap.popDecimals)); }}>
+              全部
+            </button>
+          </div>
+          {overP ? (
+            <em className="err">POP 余额不足，可以减少 USDT 数量</em>
+          ) : usdtAmt && popAmt && !pairing ? (
+            <em className="ok-txt">已按当前池子价格自动配好对应数量</em>
+          ) : null}
+        </label>
+      )}
       {qErr && <div className="alert">{qErr}</div>}
       {q && (
         <div className="quote">
@@ -820,7 +890,10 @@ function AddSheet({ cfg, snap, backend, refParam, account, canTx, close, done }:
             <b>≈ {fmtUnits(q.estValueUsd, 18)} USDT</b>
           </div>
           <p className="fine">
-            只需要 USDT：合约会自动把大约一半换成 POP，再一起加入池子。全价格区间，无需设置区间；滑点保护 {SLIP_BPS / 100}%，报价有效期 10 分钟。实际以链上成交为准，没用完的代币会原路退回。
+            {mode === "usdt"
+              ? "只需要 USDT：合约会自动把大约一半换成 POP，再一起加入池子。"
+              : "输入任意一边，另一边会按池子当前价格自动算好，两种币一起加入池子。"}
+            全价格区间，无需设置区间；滑点保护 {SLIP_BPS / 100}%，报价有效期 10 分钟。实际以链上成交为准，没用完的代币会原路退回。
             {expired && <b className="err"> 报价已过期，请刷新。</b>}
           </p>
         </div>
@@ -853,7 +926,7 @@ function AddSheet({ cfg, snap, backend, refParam, account, canTx, close, done }:
       ) : expired ? (
         <button className="btn-gold wide" onClick={() => backend.quoteAdd(mode, usdtAmt!, popAmt!, SLIP_BPS).then(setQ)}>刷新报价</button>
       ) : (
-        <button className="btn-green wide" disabled={!canTx || !q || running || !!overU || needConfirmRef || refInvalid || !snap.running} onClick={go}>
+        <button className="btn-green wide" disabled={!canTx || !q || running || !!overU || !!overP || pairing || needConfirmRef || refInvalid || !snap.running} onClick={go}>
           {running ? "处理中…" : refInvalid ? "推荐人还没有入金" : steps?.some((x) => x.status === "error") ? "重试" : !snap.running ? "当前暂停入金" : "授权并添加"}
         </button>
       )}
