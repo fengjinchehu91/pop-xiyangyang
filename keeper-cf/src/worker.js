@@ -774,86 +774,6 @@ ${hints.map((h) => `<div class="hint">${esc(h)}</div>`).join("")}
   settleList({ users });
 }
 
-// read-only connectivity check of public BSC nodes from Cloudflare's network (no keys, no transactions)
-const PROBE_RPCS = [
-  "https://bsc-rpc.publicnode.com",
-  "https://bsc-dataseed.bnbchain.org",
-  "https://bsc-mainnet.nodereal.io/v1/64a9df0874fb4a93b9d0a3849de012d3",
-  "https://bsc.drpc.org",
-  "https://bsc.blockpi.network/v1/rpc/public",
-  "https://1rpc.io/bnb",
-  "https://binance.llamarpc.com",
-  "https://bsc-pokt.nodies.app",
-  "https://bsc.meowrpc.com",
-  "https://rpc.ankr.com/bsc",
-  "https://bsc-mainnet.public.blastapi.io",
-];
-async function probe(env) {
-  const c = config(env);
-  const out = [];
-  const one = async (url, method, params) => {
-    const t = Date.now();
-    try {
-      const r = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }), signal: AbortSignal.timeout(12000) });
-      const txt = await r.text();
-      let j = null;
-      try { j = JSON.parse(txt); } catch {}
-      const ms = Date.now() - t;
-      if (!j) return { ms, http: r.status, err: txt.slice(0, 120) };
-      if (j.error) return { ms, err: String(j.error.message || JSON.stringify(j.error)).slice(0, 160) };
-      return { ms, ok: Array.isArray(j.result) ? `${j.result.length} logs` : String(j.result).slice(0, 20) };
-    } catch (e) {
-      return { ms: Date.now() - t, err: String(e?.message || e).slice(0, 120) };
-    }
-  };
-  const results = await Promise.all(
-    PROBE_RPCS.map(async (url) => {
-      const head = await one(url, "eth_blockNumber", []);
-      const h = head.ok ? Number(head.ok) : null;
-      const filter = (a, b) => [{ address: c.miner, fromBlock: qty(a), toBlock: qty(b), topics: [[T_JOINED, T_DEPOSITED, T_WITHDRAWN]] }];
-      const old1k = await one(url, "eth_getLogs", filter(c.deployBlock, c.deployBlock + 999));
-      const old5k = await one(url, "eth_getLogs", filter(c.deployBlock, c.deployBlock + 4999));
-      const recent = h ? await one(url, "eth_getLogs", filter(h - 1000, h - 5)) : null;
-      return { url, head, old1k, old5k, recent };
-    }),
-  );
-  out.push(...results);
-  return out;
-}
-
-// TEMPORARY (contract verification): compare the miner's creation transaction with the published build and show
-// its constructor arguments. Read-only; remove after the contract is verified on BscScan.
-const EXPECTED_CREATION = { len: 31680, hash: "0x3c02e49d6705bd248ed44c2374e8b7c2fb43c7cc867c6a88a1774e551c3028d2" };
-const T_OWNERSHIP = topicOf("OwnershipTransferred(address,address)");
-async function creationInfo(env, url) {
-  const c = config(env);
-  const rpc = new Rpc(c.logRpcs, 20);
-  const logs = await rpc.call("eth_getLogs", [{ address: c.miner, fromBlock: qty(c.deployBlock), toBlock: qty(c.deployBlock), topics: [T_OWNERSHIP] }]);
-  if (!logs.length) return { error: "no creation log in deploy block" };
-  const txHash = logs[0].transactionHash;
-  const tx = await rpc.call("eth_getTransactionByHash", [txHash]);
-  const input = fromHex(tx.input);
-  const prefix = input.subarray(0, EXPECTED_CREATION.len);
-  const args = input.subarray(EXPECTED_CREATION.len);
-  const w = (i) => toHex(args.subarray(i * 32, i * 32 + 32)).slice(2);
-  const addr = (i) => "0x" + w(i).slice(24);
-  const uint = (i) => BigInt("0x" + w(i)).toString();
-  const int24 = (i) => { let v = BigInt("0x" + w(i)); if (v >= 1n << 255n) v -= 1n << 256n; return v.toString(); };
-  const names = ["pool", "npm", "pop", "usdt", "reward", "rewardPool", "rewardPoolIsV2", "v2Factory", "operator", "twapWindow", "maxTickDeviation", "minPoolLiquidity", "minRewardPoolLiquidity", "maxValuationAge", "runwayDays", "maxUplineSearch"];
-  const kinds = ["a", "a", "a", "a", "a", "a", "b", "a", "a", "u", "i", "u", "u", "u", "u", "u"];
-  const fields = names.map((n, i) => `${i + 1}. ${n} = ${kinds[i] === "a" ? addr(i) : kinds[i] === "b" ? (uint(i) === "1" ? "true" : "false") : kinds[i] === "i" ? int24(i) : uint(i)}`);
-  const want = url.searchParams.get("args");
-  return [
-    `txHash = ${txHash}`,
-    `from = ${tx.from}`,
-    `creationCodeMatches = ${toHex(keccak_256(prefix)) === EXPECTED_CREATION.hash}`,
-    `argsBytes = ${args.length}`,
-    `argsHash = ${toHex(keccak_256(args))}`,
-    want ? `argsHashMatchesQuery = ${want.toLowerCase() === toHex(keccak_256(args))}` : "",
-    ...fields,
-  ].filter(Boolean).join("\n");
-}
-
 export function statusJson(s) {
   const st = s?.status || null;
   return {
@@ -887,18 +807,6 @@ export default {
     const url = new URL(request.url);
     // "/" only reaches this code when the Worker runs without the website files next to it
     const p = url.pathname.replace(/\/+$/, "") || "/";
-    if (p === "/keeper/creation") {
-      let body;
-      try {
-        body = await creationInfo(env, url);
-      } catch (e) {
-        body = "error = " + (e?.message || e);
-      }
-      return new Response(typeof body === "string" ? body : JSON.stringify(body), { headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
-    }
-    if (p === "/keeper/diag") {
-      return new Response(JSON.stringify(await probe(env), null, 1), { headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
-    }
     if (p !== "/" && p !== "/keeper" && p !== "/keeper.json") return new Response("Not found", { status: 404 });
     let s = pageMemo.s;
     if (Date.now() - pageMemo.t > 20000) {
