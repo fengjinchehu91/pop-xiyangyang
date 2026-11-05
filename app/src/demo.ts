@@ -134,6 +134,7 @@ export class DemoBackend {
   }
   deposit(_q: AddQuote, _r: string, steps: Step[], on: OnSteps) { return this.fake(steps, on); }
   withdraw(_q: ExitQuote, steps: Step[], on: OnSteps) { return this.fake(steps, on); }
+  bind(_r: string, steps: Step[], on: OnSteps) { return this.fake(steps, on); }
   claim(_m: bigint, steps: Step[], on: OnSteps) { return this.fake(steps, on); }
   admin(_a: string, _x: any, steps: Step[], on: OnSteps) { return this.fake(steps, on); }
 

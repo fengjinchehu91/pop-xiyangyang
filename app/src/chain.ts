@@ -384,6 +384,22 @@ export class ChainBackend {
     return this.runSteps(steps, fns, on);
   }
 
+  /** bind a referrer before the first deposit (one wallet confirmation, can never be changed) */
+  async bind(referrer: string, steps: Step[], on: OnSteps): Promise<boolean> {
+    const s = await this.signer();
+    return this.runSteps(
+      steps,
+      [
+        async () => {
+          const from = await s.getAddress();
+          await this.precheck(() => this.minerRpc.bind.staticCall(referrer, { from }));
+          return new E.Contract(this.addr.miner, MINER_ABI, s).bind(referrer);
+        },
+      ],
+      on,
+    );
+  }
+
   async withdraw(q: ExitQuote, steps: Step[], on: OnSteps): Promise<boolean> {
     const s = await this.signer();
     return this.runSteps(

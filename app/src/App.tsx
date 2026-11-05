@@ -100,6 +100,15 @@ export default function App({ cfg }: { cfg: AppConfig }) {
 
   const live = useLive(snap, tick);
 
+  // 首次进入：新钱包必须先绑定推荐人，才能进入网站。已绑定、已入过金的钱包和运营/管理钱包直接进入。
+  const [bound, setBound] = useState(false);
+  const [demoGate, setDemoGate] = useState(demo && new URLSearchParams(location.search).get("gate") !== "0");
+  const me = account.toLowerCase();
+  const isStaff = !!me && [snap?.owner, snap?.operator].some((x) => !!x && x.toLowerCase() === me);
+  const gate = demo
+    ? demoGate
+    : !!snap?.configured && !bound && !isStaff && (!account || !snap.user || (!snap.user.referrer && !snap.user.joined));
+
   return (
     <div className="shell">
       <div className="app">
@@ -121,6 +130,24 @@ export default function App({ cfg }: { cfg: AppConfig }) {
           </div>
         )}
 
+        {gate && snap ? (
+          <BindGate
+            cfg={cfg}
+            snap={snap}
+            backend={backend}
+            refParam={refParam}
+            account={account}
+            canTx={canTx}
+            demo={demo}
+            onConnect={connect}
+            done={() => {
+              setBound(true);
+              setDemoGate(false);
+              refresh();
+            }}
+          />
+        ) : (
+        <>
         <main className="content">
           {!snap && !loadErr && <Loading />}
           {snap && page === "mine" && (
@@ -148,6 +175,8 @@ export default function App({ cfg }: { cfg: AppConfig }) {
         {showAdmin && page !== "admin" && (
           <button className="admin-fab" onClick={() => setPage("admin")}>管理</button>
         )}
+        </>
+        )}
 
         {sheet === "add" && snap && (
           <AddSheet cfg={cfg} snap={snap} backend={backend} refParam={refParam} account={account} canTx={canTx} close={() => setSheet(null)} done={refresh} />
@@ -164,6 +193,90 @@ export default function App({ cfg }: { cfg: AppConfig }) {
         )}
       </div>
     </div>
+  );
+}
+
+// =====================================================================================================
+/** 打开网站先绑定推荐人：推荐链接里的地址直接显示出来，确认后用钱包签一次，成功后进入网站 */
+function BindGate({ cfg, snap, backend, refParam, account, canTx, demo, onConnect, done }: { cfg: AppConfig; snap: Snapshot; backend: Backend; refParam: string; account: string; canTx: boolean; demo: boolean; onConnect: () => void; done: () => void }) {
+  void cfg;
+  const [typed, setTyped] = useState("");
+  const fromLink = refParam || (demo ? "0x4f9e2b7c1d8a3e6f5b0c9d2e1a7b8c3d4e5f3c77" : "");
+  const ref = fromLink || (typed.match(/0x[0-9a-fA-F]{40}/)?.[0] ?? "");
+  const self = !!ref && !!account && ref.toLowerCase() === account.toLowerCase();
+  const [joined, setJoined] = useState<boolean | null>(null);
+  const [steps, setSteps] = useState<Step[] | null>(null);
+  const [running, setRunning] = useState(false);
+  useEffect(() => {
+    setJoined(null);
+    if (!ref || self) return;
+    let off = false;
+    backend.isJoined(ref).then((j) => !off && setJoined(j), () => !off && setJoined(null));
+    return () => {
+      off = true;
+    };
+  }, [ref, self, backend]);
+  const ok = !!ref && !self && joined === true;
+  const go = async () => {
+    if (!ok) return;
+    const s: Step[] = steps?.some((x) => x.status === "error") ? steps.map((x) => ({ ...x, status: "idle" as const, error: undefined })) : [{ label: "绑定推荐人（钱包确认一次）", status: "idle" }];
+    setSteps(s);
+    setRunning(true);
+    try {
+      if (await backend.bind(ref, s, setSteps)) setTimeout(done, 800);
+    } catch (e) {
+      setSteps((p) => (p ? p.map((x) => (x.status === "idle" || x.status === "wallet" ? { ...x, status: "error", error: humanError(e) } : x)) : p));
+    } finally {
+      setRunning(false);
+    }
+  };
+  const loadingUser = !!account && !snap.user && !demo;
+  return (
+    <main className="content gate">
+      <section className="card gate-card">
+        <img src={A("sheep-thumb.png")} alt="" className="gate-img" />
+        <h2>绑定推荐人</h2>
+        <p className="gate-sub">绑定后即可进入喜羊羊矿场</p>
+
+        {fromLink ? (
+          <div className="gate-ref">
+            <span>推荐人</span>
+            <b className="mono">{fromLink}</b>
+          </div>
+        ) : (
+          <label className="inp gate-inp">
+            <span>推荐人钱包地址</span>
+            <div className="inp-row">
+              <input placeholder="粘贴推荐人地址或推荐链接" value={typed} onChange={(e) => setTyped(e.target.value.trim())} disabled={running} autoCapitalize="off" autoCorrect="off" spellCheck={false} />
+            </div>
+            {typed && !ref && <em className="err">没有识别到钱包地址，请检查</em>}
+          </label>
+        )}
+
+        {ref && (self ? (
+          <p className="gate-msg bad">不能绑定自己为推荐人，请使用别人的推荐链接打开。</p>
+        ) : joined === false ? (
+          <p className="gate-msg bad">这个推荐人还没有添加过流动性，暂时不能绑定。请让推荐人先添加一次流动性，再用他的推荐链接打开。</p>
+        ) : joined === true ? (
+          <p className="gate-msg ok-txt">✓ 推荐人有效，可以绑定</p>
+        ) : (
+          <p className="gate-msg">正在检查推荐人…</p>
+        ))}
+
+        {steps && <Steps steps={steps} />}
+
+        {!account && !demo ? (
+          <button className="btn-green wide" onClick={onConnect}>连接钱包</button>
+        ) : loadingUser ? (
+          <button className="btn-green wide" disabled>正在读取钱包信息…</button>
+        ) : (
+          <button className="btn-green wide" disabled={!ok || running || (!canTx && !demo)} onClick={go}>
+            {running ? "处理中…" : steps?.some((x) => x.status === "error") ? "重试" : steps?.every((x) => x.status === "done") ? "绑定成功，正在进入…" : "确认绑定"}
+          </button>
+        )}
+        <p className="fine gate-fine">绑定关系记录在链上，绑定后不能修改。绑定需要钱包确认一次，会花极少的 BNB 手续费。</p>
+      </section>
+    </main>
   );
 }
 

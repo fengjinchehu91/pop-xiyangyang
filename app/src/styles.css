@@ -249,3 +249,19 @@ a { color: var(--g6); }
 .kv > .alert .addr-full { display: block; margin-top: 8px; color: var(--ink, #17301f); word-break: break-all; font-size: 13px; user-select: all; }
 .ok-txt { color: var(--green, #127a39); }
 
+
+/* 首次进入：绑定推荐人 */
+.gate { padding-bottom: 24px; }
+.gate-card { text-align: center; padding: 22px 18px 18px; }
+.gate-img { height: 132px; display: block; margin: 0 auto 6px; }
+.gate-card h2 { margin: 4px 0 2px; font-size: 24px; color: var(--g8); }
+.gate-sub { margin: 0 0 16px; color: var(--muted); font-size: 15px; }
+.gate-ref { text-align: left; background: var(--g1); border-radius: 14px; padding: 12px 14px; }
+.gate-ref span { display: block; font-size: 13px; color: var(--muted); margin-bottom: 2px; }
+.gate-ref b { display: block; font-size: 14px; word-break: break-all; color: var(--g8); line-height: 1.45; }
+.gate-inp { text-align: left; margin: 0; }
+.gate-msg { margin: 10px 0 2px; font-size: 14px; text-align: left; color: var(--muted); }
+.gate-msg.bad { color: var(--red); }
+.gate-card .btn-green.wide { margin-top: 14px; }
+.gate-fine { margin: 10px 0 0; text-align: left; }
+.gate-msg.ok-txt { color: var(--g6); font-weight: 600; }
