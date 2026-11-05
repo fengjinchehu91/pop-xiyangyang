@@ -868,7 +868,24 @@ export default {
       if (s) pageMemo = { t: Date.now(), s }; // remember only real data (setup in progress: always re-read)
     }
     if (p === "/keeper.json") {
-      return new Response(JSON.stringify(statusJson(s)), {
+      const out = statusJson(s);
+      // live numbers straight from the chain (the saved status is written at most every 10 minutes when idle)
+      if (out.keeper) {
+        try {
+          const c = config(env);
+          const r = await new Rpc(c.rpcs, 3).batch([
+            ["eth_getBalance", [out.keeper, "latest"]],
+            ["eth_getTransactionCount", [out.keeper, "latest"]],
+          ]);
+          if (r[0].result) {
+            out.balanceNow = BigInt(r[0].result).toString();
+            out.balance = out.balanceNow;
+            out.lowBalance = BigInt(out.balanceNow) < 3n * 10n ** 15n;
+          }
+          if (r[1].result) out.txCount = Number(r[1].result);
+        } catch {}
+      }
+      return new Response(JSON.stringify(out), {
         headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
       });
     }
