@@ -1955,69 +1955,6 @@ ${hints.map((h) => `<div class="hint">${esc(h)}</div>`).join("")}
   JSON.parse(JSON.stringify(users));
   settleList({ users });
 }
-var VERIFY = {
-  address: "0x363CBA25a4bC4617fAF017b1e0728f4AB7473E17",
-  creationTx: "0x299eedb51a8be6cfd6291a8a37aac56dbc72ba578be9c3793212eedecb74d79a",
-  input: "https://raw.githubusercontent.com/fengjinchehu91/pop-xiyangyang/main/contracts/verify/XiyangMiner-standard-input.json",
-  args: "https://raw.githubusercontent.com/fengjinchehu91/pop-xiyangyang/main/contracts/verify/constructor-args.txt",
-  name: "src/XiyangMiner.sol:XiyangMiner",
-  compiler: "0.8.26+commit.8a97fa7a"
-};
-async function verifyContract(url) {
-  const t = async (r) => `HTTP ${r.status} ${(await r.text()).slice(0, 600)}`;
-  const id = url.searchParams.get("id");
-  const key = url.searchParams.get("k");
-  const guid = url.searchParams.get("guid");
-  if (url.pathname.endsWith("/sourcify")) {
-    if (id) return t(await fetch(`https://sourcify.dev/server/v2/verify/${id}`));
-    const input2 = await (await fetch(VERIFY.input)).json();
-    return t(
-      await fetch(`https://sourcify.dev/server/v2/verify/56/${VERIFY.address}`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ stdJsonInput: input2, compilerVersion: VERIFY.compiler, contractIdentifier: VERIFY.name, creationTransactionHash: VERIFY.creationTx })
-      })
-    );
-  }
-  if (!key) return "missing key";
-  const api = "https://api.etherscan.io/v2/api?chainid=56";
-  if (guid) return t(await fetch(`${api}&module=contract&action=checkverifystatus&guid=${encodeURIComponent(guid)}&apikey=${encodeURIComponent(key)}`));
-  const [input, args] = await Promise.all([fetch(VERIFY.input).then((r) => r.text()), fetch(VERIFY.args).then((r) => r.text())]);
-  const form = new URLSearchParams({
-    module: "contract",
-    action: "verifysourcecode",
-    apikey: key,
-    contractaddress: VERIFY.address,
-    sourceCode: input,
-    codeformat: "solidity-standard-json-input",
-    contractname: VERIFY.name,
-    compilerversion: "v" + VERIFY.compiler,
-    constructorArguements: args.trim(),
-    licenseType: "4"
-  });
-  return t(await fetch(`${api}&module=contract&action=verifysourcecode`, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: form }));
-}
-async function diag(env) {
-  const c = config(env);
-  const rpc = new Rpc(c.rpcs, 40);
-  const call = (to, sig, args = "") => ["eth_call", [{ to, data: "0x" + selector(sig) + args }, "latest"]];
-  const m = c.miner;
-  const names = ["POOL()", "REWARD_POOL()", "TWAP_WINDOW()", "rewardPriceView()", "pauseReasons()", "accruing()", "lastValuationTime()"];
-  const r1 = await rpc.batch([["eth_getBlockByNumber", ["latest", false]], ...names.map((n) => call(m, n))]);
-  const out = { now: Number(r1[0].result?.timestamp), miner: {} };
-  names.forEach((n, i) => out.miner[n] = r1[i + 1].result ?? r1[i + 1].error?.message);
-  const pool = "0x" + String(out.miner["POOL()"]).slice(-40);
-  const rp = "0x" + String(out.miner["REWARD_POOL()"]).slice(-40);
-  const tw = Number(big2(out.miner["TWAP_WINDOW()"]));
-  const obsArgs = word(32) + word(2) + word(tw) + word(0);
-  void rp;
-  const q = [call(pool, "slot0()"), call(pool, "observe(uint32[])", obsArgs)];
-  const r2 = await rpc.batch(q);
-  const keys = ["slot0", "observe"];
-  out.pool = {};
-  keys.forEach((k, i) => out.pool[k] = r2[i].result ?? "ERR " + (r2[i].error?.message || "") + " " + (r2[i].error?.data || ""));
-  return out;
-}
 function statusJson(s) {
   const st = s?.status || null;
   return {
@@ -2048,24 +1985,6 @@ var worker_default = {
   async fetch(request, env) {
     const url = new URL(request.url);
     const p = url.pathname.replace(/\/+$/, "") || "/";
-    if (p === "/keeper/diag") {
-      let body;
-      try {
-        body = JSON.stringify(await diag(env), null, 1);
-      } catch (e) {
-        body = "error " + (e?.message || e);
-      }
-      return new Response(body, { headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
-    }
-    if (p === "/keeper/verify/sourcify" || p === "/keeper/verify/bscscan") {
-      let body;
-      try {
-        body = await verifyContract(url);
-      } catch (e) {
-        body = "error " + (e?.message || e);
-      }
-      return new Response(body, { headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
-    }
     if (p !== "/" && p !== "/keeper" && p !== "/keeper.json") return new Response("Not found", { status: 404 });
     let s = pageMemo.s;
     if (Date.now() - pageMemo.t > 2e4) {
