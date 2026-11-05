@@ -277,6 +277,7 @@ function MinePage(props: {
 }) {
   const { cfg, snap, live, account, canTx, open } = props;
   const u = snap.user;
+  const isOperator = !!account && !!snap.operator && account.toLowerCase() === snap.operator.toLowerCase();
   const ex = (a: string) => `${cfg.explorer}/address/${a}`;
   return (
     <>
@@ -326,9 +327,10 @@ function MinePage(props: {
             <div className="usd-note">
               计价额度 {fmtUnits((live?.personalUsd ?? 0n) + (live?.dynamicUsd ?? 0n), 18, 4)} USDT · 按当前喜羊羊参考价换算
             </div>
-            <button className="btn-gold wide" disabled={!canTx || !u || snap.params.claimPaused || (live?.personalUsd ?? 0n) + (live?.dynamicUsd ?? 0n) === 0n} onClick={() => open("claim")}>
-              {snap.params.claimPaused ? "领取暂时关闭" : "领取喜羊羊"}
+            <button className="btn-gold wide" disabled={!canTx || !u || isOperator || snap.params.claimPaused || (live?.personalUsd ?? 0n) + (live?.dynamicUsd ?? 0n) === 0n} onClick={() => open("claim")}>
+              {isOperator ? "运营钱包无需领取" : snap.params.claimPaused ? "领取暂时关闭" : "领取喜羊羊"}
             </button>
+            {isOperator && <p className="fine-light">奖励本来就是从运营钱包发出的，运营钱包给自己领取等于自己转给自己，合约不支持，也不会有任何损失。</p>}
             {snap.params.claimPaused && <p className="fine-light">管理员已暂停领取，收益照常累计，恢复后可领取</p>}
             <p className="fine-light">预计数量随价格变化，以领取时结算为准</p>
           </section>

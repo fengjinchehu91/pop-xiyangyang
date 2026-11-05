@@ -685,7 +685,7 @@ export function humanError(e: any): string {
   if (/Expired/.test(m)) return "报价已过期，请刷新后重试";
   if (/NotRunning/.test(m)) return "当前暂停新增入金（见运行状态），本金退出不受影响";
   if (/RewardPriceUnavailable/.test(m)) return "喜羊羊报价暂不可用，暂不能领取，奖励不会丢失";
-  if (/FeeOnTransfer/.test(m)) return "检测到代币转账扣税，交易已整体回滚";
+  if (/FeeOnTransfer/.test(m)) return "到账数量和应发数量不一致（代币转账扣税，或运营钱包给自己领取），交易已整体回滚，奖励不会丢失";
   if (/NothingToClaim/.test(m)) return "暂无可领取奖励";
   if (/insufficient funds|gas required exceeds|INSUFFICIENT_FUNDS/i.test(m) || e?.code === "INSUFFICIENT_FUNDS")
     return "钱包里的 BNB 不够付手续费，请先往这个钱包转一点 BNB（0.005 左右就够）";
