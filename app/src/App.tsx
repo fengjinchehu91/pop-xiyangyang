@@ -96,7 +96,7 @@ export default function App({ cfg }: { cfg: AppConfig }) {
   const wrongNet = !demo && !!account && chainId !== null && chainId !== cfg.chainId;
   const canTx = demo || (!!snap?.configured && !!account && !wrongNet);
   const isAdmin = !!snap && !!account && !!snap.owner && snap.owner.toLowerCase() === account.toLowerCase();
-  const showAdmin = isAdmin || (demo && (new URLSearchParams(location.search).get("admin") === "1" || location.hash === "#admin"));
+  const showAdmin = isAdmin || demo; // 演示预览里总是显示「管理」按钮，方便查看后台
 
   const live = useLive(snap, tick);
 
