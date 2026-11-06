@@ -635,7 +635,7 @@ function ReferPage({ cfg, snap, live, account, backend, onConnect, toast }: { cf
         <div className="elig-ic">{u?.eligible ? "✓" : "!"}</div>
         <div>
           <b>{u?.eligible ? "动态资格已生效" : "动态资格未生效"}</b>
-          <div>{u?.eligible ? `当前LP参考价值 ≥ ${usd0(thr)} USDT` : `距 ${usd0(thr)} USDT 门槛还差 ${fmtUnits(gap > 0n ? gap : 0n, 18)} USDT`}</div>
+          <div>{u?.eligible ? "入金 ≥ 100 USDT 即可享受动态资格" : `距 ${usd0(thr)} USDT 门槛还差 ${fmtUnits(gap > 0n ? gap : 0n, 18)} USDT`}</div>
         </div>
       </section>
 
