@@ -8,7 +8,7 @@ import { applySlippage, E18, fmtTime, fmtUnits, parseUnitsSafe, short, usdToToke
 
 type Backend = ChainBackend | DemoBackend;
 type Page = "mine" | "refer" | "records" | "admin";
-type SheetKind = null | "add" | "exit" | "claim" | "rules";
+type SheetKind = null | "add" | "exit" | "claim" | "rules" | "old";
 
 /** basis points -> "1%" / "0.5%" */
 const pct = (bps: number) => `${Number((bps / 100).toFixed(2))}%`;
@@ -142,6 +142,7 @@ export default function App({ cfg }: { cfg: AppConfig }) {
             canTx={canTx}
             demo={demo}
             onConnect={connect}
+            openOld={() => setSheet("old")}
             done={() => {
               setBound(true);
               setDemoGate(false);
@@ -188,6 +189,7 @@ export default function App({ cfg }: { cfg: AppConfig }) {
         )}
         {sheet === "claim" && snap && <ClaimSheet snap={snap} live={live} backend={backend} canTx={canTx} close={() => setSheet(null)} done={refresh} />}
         {sheet === "rules" && <RulesSheet snap={snap} close={() => setSheet(null)} />}
+        {sheet === "old" && snap?.old && <OldSheet snap={snap} backend={backend} canTx={canTx} close={() => setSheet(null)} done={refresh} />}
         {toast && (
           <div className="toast" onClick={() => setToast("")}>
             {toast}
@@ -200,7 +202,7 @@ export default function App({ cfg }: { cfg: AppConfig }) {
 
 // =====================================================================================================
 /** 打开网站先绑定推荐人：推荐链接里的地址直接显示出来，确认后用钱包签一次，成功后进入网站 */
-function BindGate({ cfg, snap, backend, refParam, account, canTx, demo, onConnect, done }: { cfg: AppConfig; snap: Snapshot; backend: Backend; refParam: string; account: string; canTx: boolean; demo: boolean; onConnect: () => void; done: () => void }) {
+function BindGate({ cfg, snap, backend, refParam, account, canTx, demo, onConnect, openOld, done }: { cfg: AppConfig; snap: Snapshot; backend: Backend; refParam: string; account: string; canTx: boolean; demo: boolean; onConnect: () => void; openOld: () => void; done: () => void }) {
   void cfg;
   const [typed, setTyped] = useState("");
   // 老用户：自动沿用旧矿池里的推荐人
@@ -284,7 +286,77 @@ function BindGate({ cfg, snap, backend, refParam, account, canTx, demo, onConnec
         )}
         <p className="fine gate-fine">绑定关系记录在链上，绑定后不能修改。绑定需要钱包确认一次，会花极少的 BNB 手续费。</p>
       </section>
+      <OldPoolCard snap={snap} open={openOld} />
     </main>
+  );
+}
+
+// ------------------------------------------------------------------ previous contract: withdraw only
+/** 旧矿池里还有本金时才显示：撤回后到新矿池重新添加（旧合约已结束，只撤回、不领取） */
+function OldPoolCard({ snap, open }: { snap: Snapshot; open: () => void }) {
+  const o = snap.old;
+  if (!o || o.liquidity === 0n) return null;
+  return (
+    <section className="card old-pool">
+      <b>旧矿池还有您的流动性</b>
+      <p className="fine">请撤回后到新矿池重新添加。</p>
+      <div className="kv">
+        <div><span>旧矿池流动性（参考价值）</span><b>{fmtUnits(o.valueUsd, 18)} USDT</b></div>
+      </div>
+      <button className="btn-gold wide" onClick={open}>从旧矿池撤回</button>
+    </section>
+  );
+}
+
+function OldSheet({ snap, backend, canTx, close, done }: { snap: Snapshot; backend: Backend; canTx: boolean; close: () => void; done: () => void }) {
+  const [o] = useState(snap.old!); // the amounts shown when the sheet was opened
+  const [amts, setAmts] = useState<[bigint, bigint] | null>(null);
+  const [steps, setSteps] = useState<Step[] | null>(null);
+  const [running, setRunning] = useState(false);
+  useEffect(() => {
+    if (o.liquidity > 0n) backend.oldAmounts(o.liquidity).then(setAmts, () => setAmts(null));
+  }, [backend, o.liquidity]);
+  const go = async () => {
+    const s: Step[] = [{ label: "从旧矿池撤回全部流动性", status: "idle" }];
+    setSteps(s);
+    setRunning(true);
+    try {
+      await backend.withdrawOld(SLIP_BPS, s, setSteps);
+    } catch (e) {
+      setSteps([{ ...s[0], status: "error", error: humanError(e) }]);
+    } finally {
+      setRunning(false);
+      done();
+    }
+  };
+  const allDone = !!steps && steps.every((x) => x.status === "done" || x.status === "skipped");
+  return (
+    <Sheet title="从旧矿池撤回" close={close} icon={<span className="ic-c">⊖</span>}>
+      <div className="quote">
+        <b className="q-title">预计返还</b>
+        <div className="qr-row">
+          <span>
+            <img src={A("pop-coin.png")} alt="" className="tok" /> POP
+          </span>
+          <b>{amts ? fmtUnits(amts[0], snap.popDecimals) : "…"}</b>
+        </div>
+        <div className="qr-row">
+          <span>
+            <i className="usdt-ic">U</i> USDT
+          </span>
+          <b>{amts ? fmtUnits(amts[1], snap.usdtDecimals) : "…"}</b>
+        </div>
+        <p className="fine">另含这段时间的交易手续费，一起回到您的钱包。之后在新矿池重新添加即可。</p>
+      </div>
+      {steps && <Steps steps={steps} />}
+      {allDone ? (
+        <button className="btn-green wide" onClick={close}>完成</button>
+      ) : (
+        <button className="btn-gold wide" disabled={!canTx || running} onClick={go}>
+          {running ? "处理中…" : steps?.some((x) => x.status === "error") ? "重试" : "确认撤回"}
+        </button>
+      )}
+    </Sheet>
   );
 }
 
@@ -477,6 +549,7 @@ function MinePage(props: {
         tag="每日 0.5%～1% · 随存随取"
       />
       <StatusLine snap={snap} account={account} />
+      {account && <OldPoolCard snap={snap} open={() => open("old")} />}
 
       {!account ? (
         <div className="card center">

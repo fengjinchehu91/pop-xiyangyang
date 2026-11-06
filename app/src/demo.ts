@@ -154,6 +154,15 @@ export class DemoBackend {
   claim(_m: bigint, steps: Step[], on: OnSteps) { return this.fake(steps, on); }
   admin(_a: string, _x: any, steps: Step[], on: OnSteps) { return this.fake(steps, on); }
   oldDone = false;
+  async oldAmounts(liquidity: bigint): Promise<[bigint, bigint]> {
+    void liquidity;
+    return [159n * E18 * POP_PER_USDT, 159n * E18];
+  }
+  async withdrawOld(_s: number, steps: Step[], on: OnSteps) {
+    const ok = await this.fake(steps, on);
+    this.oldDone = true;
+    return ok;
+  }
   async migrateOld(_s: number, steps: Step[], on: OnSteps) {
     const ok = await this.fake(steps, on);
     this.oldDone = true;

@@ -530,9 +530,14 @@ export class ChainBackend {
     );
   }
 
-  /** previous contract: take all liquidity out, then claim everything still owed there (each step skipped when
-   * there is nothing to do) */
-  async migrateOld(slipBps: number, steps: Step[], on: OnSteps): Promise<boolean> {
+  /** (POP, USDT) that `liquidity` of the previous contract's position is worth at the current price (excl. fees) */
+  async oldAmounts(liquidity: bigint): Promise<[bigint, bigint]> {
+    const [a0, a1] = amountsForLiquidity(await this.spotSqrt(), this.oldSqrt[0], this.oldSqrt[1], liquidity);
+    return this.token0.toLowerCase() === this.addr.pop.toLowerCase() ? [a0, a1] : [a1, a0];
+  }
+
+  /** previous contract (ended): take all liquidity out. Needs no approval; rewards there are not claimed. */
+  async withdrawOld(slipBps: number, steps: Step[], on: OnSteps): Promise<boolean> {
     if (!this.old) throw new Error("没有旧矿池");
     const s = await this.signer();
     const from = await s.getAddress();
@@ -544,21 +549,11 @@ export class ChainBackend {
           const u = await this.old.getUser(from);
           const liq: bigint = u.liquidity;
           if (liq === 0n) return null;
-          const [a0, a1] = amountsForLiquidity(await this.spotSqrt(), this.oldSqrt[0], this.oldSqrt[1], liq);
-          const [pop, usdt] = this.token0.toLowerCase() === this.addr.pop.toLowerCase() ? [a0, a1] : [a1, a0];
+          const [pop, usdt] = await this.oldAmounts(liq);
           const dl = await this.deadline();
           const [mp, mu] = [applySlippage(pop, slipBps), applySlippage(usdt, slipBps)];
           await this.precheck(() => this.oldRpc.withdraw.staticCall(liq, mp, mu, dl, { from }));
           return o.withdraw(liq, mp, mu, dl);
-        },
-        async () => {
-          const [pend, rp] = await Promise.all([this.old.pendingUsd(from), this.old.rewardPriceView()]);
-          const usd: bigint = pend[0] + pend[1];
-          if (usd === 0n) return null;
-          if (!rp[0]) throw new Error("RewardPriceUnavailable");
-          const minOut = applySlippage((usd * 10n ** BigInt(this.dec.reward)) / rp[1], slipBps);
-          await this.precheck(() => this.oldRpc.claim.staticCall(minOut, { from }));
-          return o.claim(minOut);
         },
       ],
       on,
