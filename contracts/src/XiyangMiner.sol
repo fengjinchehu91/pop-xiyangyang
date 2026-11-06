@@ -17,10 +17,15 @@ import {
     IPancakeV2Factory
 } from "./interfaces/IPancakeV3.sol";
 
-/// @title 喜羊羊矿场 (XiyangMiner)
+/// @title 喜羊羊矿场 (XiyangMiner) — version 2: rewards by the amount put in
 /// @notice Custodies one full-range PancakeSwap V3 position NFT per user in a single fixed POP/USDT pool,
-/// accrues USDT-denominated rewards (1%/day of the position's TWAP reference value, 85/10/5 split),
-/// and pays rewards in the reward token via transferFrom from the operator wallet (allowance model).
+/// accrues USDT-denominated rewards (1%/day of the user's principal, 85/10/5 split), and pays rewards in the
+/// reward token via transferFrom from the operator wallet (allowance model).
+///
+/// Principal ("入金额度", USD 18-dec): the TWAP value of the liquidity a deposit adds, booked at deposit time. Later
+/// price moves of the position do not change it. A withdrawal reduces it in proportion to the liquidity removed
+/// (everything removed -> 0). Referral rewards need principal >= the threshold (100 USD by default; 0.5% tolerance
+/// for swap fees and rounding).
 ///
 /// Key properties:
 /// - Principal never touches the operator wallet; withdraw() needs no oracle, no reserve, and ignores pauses.
@@ -28,16 +33,17 @@ import {
 /// - Owner can pause/resume deposits+accrual, pause claims, end mining for good, and tune bounded parameters
 ///   (daily rate, 85/10/5 split, dynamic threshold, safety settings). Every change first settles everything accrued
 ///   so far under the old settings, so changes only affect the future. Owner can never touch principal or NFTs.
-/// - Rewards accrue piecewise-constant on the latest checkpoint valuation; accrual stops automatically when
-///   the valuation is older than maxValuationAge, when reserve coverage fails, or when paused. No back-pay.
+/// - Rewards accrue on principal; accrual stops automatically when no checkpoint ran for maxValuationAge, when the
+///   reward price is unavailable, when reserve coverage fails, or when paused. No back-pay. A missing POP/USDT
+///   average price only blocks new deposits (their principal cannot be valued), it does not stop accrual.
 contract XiyangMiner is ReentrancyGuard, Ownable2Step {
     using SafeERC20 for IERC20;
 
     // ------------------------------------------------------------------ constants
     uint256 public constant L_REF = 1e27; // reference liquidity unit for valuePerRef
     uint256 public constant ACC_PREC = 1e18; // index precision
-    uint256 private constant LREF_ACC = L_REF * ACC_PREC;
     uint256 private constant BPS = 10_000;
+    uint256 private constant ELIG_TOL_BPS = 50; // referral threshold tolerance (swap fees / rounding at deposit)
 
     // reasons bitmask for "not running"
     uint8 public constant R_ADMIN_PAUSED = 1;
@@ -79,8 +85,9 @@ contract XiyangMiner is ReentrancyGuard, Ownable2Step {
     uint64 public lastValuationTime;
     uint64 public lastCheckpointTime;
     uint256 public valuePerRef; // USD (18-dec) value of L_REF liquidity at the last valid TWAP
-    uint256 public rewardIndex; // cumulative total (100%) reward USD per L_REF, scaled by ACC_PREC
+    uint256 public rewardIndex; // cumulative total (100%) reward USD per 1 USD of principal, scaled by ACC_PREC
     uint256 public totalLiquidity;
+    uint256 public totalPrincipal; // sum of all users' principal (USD 18-dec)
     uint256 public totalBaseAccruedUsd; // upper bound of all rewards ever accrued (incl. unallocated referral parts)
     uint256 public totalPaidUsd;
     uint256 public totalPaidReward;
@@ -96,9 +103,9 @@ contract XiyangMiner is ReentrancyGuard, Ownable2Step {
     bool public ended; // mining ended for good: no accrual, no deposits; claims and withdrawals still work
     uint128 public minPoolLiquidity;
     uint128 public minRewardPoolLiquidity;
-    uint256 public dynamicThresholdUsd = 100e18; // LP value needed for referral rewards
+    uint256 public dynamicThresholdUsd = 100e18; // principal needed for referral rewards
 
-    // per-share cumulative indices (USD per L_REF, scaled by ACC_PREC), already split at accrual time
+    // per-share cumulative indices (USD per 1 USD of principal, scaled by ACC_PREC), already split at accrual time
     uint256 public accPersonal;
     uint256 public accTier1;
     uint256 public accTier2;
@@ -108,6 +115,7 @@ contract XiyangMiner is ReentrancyGuard, Ownable2Step {
         bool joined;
         uint64 firstDepositAt;
         uint128 liquidity;
+        uint256 principalUsd; // 入金额度: USD (18-dec) value booked at deposit, reduced in proportion on withdrawal
         uint256 tokenId;
         uint256 snapP; // accPersonal at last settlement
         uint256 snap1; // accTier1 at last settlement
@@ -160,6 +168,7 @@ contract XiyangMiner is ReentrancyGuard, Ownable2Step {
         uint256 usdtFees
     );
     event DynamicAccrued(address indexed upline, address indexed from, uint8 tier, uint256 usd);
+    event PrincipalChanged(address indexed user, uint256 principalUsd);
     event Claimed(
         address indexed user,
         uint256 personalUsd,
@@ -474,15 +483,15 @@ contract XiyangMiner is ReentrancyGuard, Ownable2Step {
         uint256 t = block.timestamp;
         uint256 last = lastAccrueTime;
         if (t <= last) return;
-        if (accruing && valuePerRef > 0 && totalLiquidity > 0) {
-            uint256 end = Math.min(t, uint256(lastValuationTime) + MAX_VALUATION_AGE);
+        if (accruing && totalPrincipal > 0) {
+            uint256 end = Math.min(t, uint256(lastCheckpointTime) + MAX_VALUATION_AGE);
             if (end > last) {
-                uint256 dI = Math.mulDiv(valuePerRef * (end - last), ACC_PREC * dailyRateBps, BPS * 1 days);
+                uint256 dI = Math.mulDiv(end - last, ACC_PREC * dailyRateBps, BPS * 1 days);
                 rewardIndex += dI;
                 accPersonal += dI * personalBps / BPS;
                 accTier1 += dI * tier1Bps / BPS;
                 accTier2 += dI * tier2Bps / BPS;
-                totalBaseAccruedUsd += Math.mulDiv(totalLiquidity, dI, LREF_ACC);
+                totalBaseAccruedUsd += Math.mulDiv(totalPrincipal, dI, ACC_PREC);
             }
         }
         lastAccrueTime = uint64(t);
@@ -508,9 +517,10 @@ contract XiyangMiner is ReentrancyGuard, Ownable2Step {
         if (!okR) reasons |= R_REWARD_PRICE_INVALID;
         if (adminPaused) reasons |= R_ADMIN_PAUSED;
         if (ended) reasons |= R_ENDED;
-        if (okV && okR && !_coverageOk(v, rp)) reasons |= R_RESERVE_LOW;
+        if (okR && !_coverageOk(rp)) reasons |= R_RESERVE_LOW;
 
-        running = reasons == 0;
+        // the POP/USDT valuation is only needed to book the principal of new deposits: it does not stop accrual
+        running = (reasons & ~R_VALUATION_INVALID) == 0;
         if (running != accruing) emit RunningChanged(running, reasons);
         accruing = running;
         pauseReasons = reasons;
@@ -519,12 +529,12 @@ contract XiyangMiner is ReentrancyGuard, Ownable2Step {
     }
 
     /// reserve (min(balance, allowance)) valued at TWAP must cover outstanding liability + runway of emissions
-    function _coverageOk(uint256 v, uint256 rewardPriceUsd) internal view returns (bool) {
+    function _coverageOk(uint256 rewardPriceUsd) internal view returns (bool) {
         (uint256 bal, uint256 allow) = _reserve();
         uint256 reserveTokens = Math.min(bal, allow);
         uint256 reserveUsd = Math.mulDiv(reserveTokens, rewardPriceUsd, REWARD_UNIT);
         uint256 liability = _liability();
-        uint256 dailyEmission = Math.mulDiv(totalLiquidity, v, L_REF) * dailyRateBps / BPS;
+        uint256 dailyEmission = totalPrincipal * dailyRateBps / BPS;
         // Require at least a minimal non-zero reserve even with zero TVL, so "balance > 0" alone never suffices
         // in a meaningful way: need = liability + runway * max(dailyEmission, emission of 100 USD TVL).
         uint256 minDaily = 100e18 * uint256(dailyRateBps) / BPS;
@@ -536,9 +546,7 @@ contract XiyangMiner is ReentrancyGuard, Ownable2Step {
 
     function _eligible(address a) internal view returns (bool) {
         if (a == address(0)) return false;
-        uint256 v = valuePerRef;
-        if (v == 0) return false;
-        return Math.mulDiv(users[a].liquidity, v, L_REF) >= dynamicThresholdUsd;
+        return users[a].principalUsd * BPS >= dynamicThresholdUsd * (BPS - ELIG_TOL_BPS);
     }
 
     /// Settle `u` up to the current indices. Assumes _accrue() already ran in this tx.
@@ -546,12 +554,11 @@ contract XiyangMiner is ReentrancyGuard, Ownable2Step {
     /// first own-withdrawal eligibility loss of that upline. Then uplines are re-assigned for the next interval.
     function _settle(address u) internal {
         User storage s = users[u];
-        uint128 liq = s.liquidity;
-        if (liq > 0) {
-            uint256 personal = Math.mulDiv(liq, accPersonal - s.snapP, LREF_ACC);
-            s.personalUsd += personal;
-            _payUp(s.up1, s.up1Mark, s.snap1, accTier1, liq, u, 1);
-            _payUp(s.up2, s.up2Mark, s.snap2, accTier2, liq, u, 2);
+        uint256 pr = s.principalUsd;
+        if (pr > 0) {
+            s.personalUsd += Math.mulDiv(pr, accPersonal - s.snapP, ACC_PREC);
+            _payUp(s.up1, s.up1Mark, s.snap1, accTier1, pr, u, 1);
+            _payUp(s.up2, s.up2Mark, s.snap2, accTier2, pr, u, 2);
         }
         s.snapP = accPersonal;
         s.snap1 = accTier1;
@@ -559,7 +566,7 @@ contract XiyangMiner is ReentrancyGuard, Ownable2Step {
         _assignUplines(s);
     }
 
-    function _payUp(address up, uint32 mark, uint256 from, uint256 to, uint128 liq, address src, uint8 tier) internal {
+    function _payUp(address up, uint32 mark, uint256 from, uint256 to, uint256 base, address src, uint8 tier) internal {
         if (up == address(0)) return;
         Loss[] storage log = lossLog[up];
         if (log.length > mark) {
@@ -567,7 +574,7 @@ contract XiyangMiner is ReentrancyGuard, Ownable2Step {
             if (lostAt < to) to = lostAt;
         }
         if (to <= from) return;
-        uint256 amt = Math.mulDiv(liq, to - from, LREF_ACC);
+        uint256 amt = Math.mulDiv(base, to - from, ACC_PREC);
         if (amt == 0) return;
         users[up].dynamicUsd += amt;
         emit DynamicAccrued(up, src, tier, amt);
@@ -622,7 +629,8 @@ contract XiyangMiner is ReentrancyGuard, Ownable2Step {
         if (block.timestamp > p.deadline) revert Expired();
         if (p.usdtAmount == 0 && p.popAmount == 0) revert ZeroAmount();
         if (p.swapUsdtAmount > p.usdtAmount) revert ZeroAmount();
-        if (!_checkpoint()) revert NotRunning(pauseReasons);
+        // running, and the POP/USDT average price was readable in this very checkpoint (it values the principal)
+        if (!_checkpoint() || lastValuationTime != block.timestamp) revert NotRunning(pauseReasons);
         // deposits trade at the spot price: refuse while the POP/USDT spot is pushed away from its average
         {
             (bool okP, int24 tw, int24 sp) = _twapTick(POOL, minPoolLiquidity);
@@ -657,6 +665,10 @@ contract XiyangMiner is ReentrancyGuard, Ownable2Step {
         if (uint256(s.liquidity) + liquidityAdded > type(uint128).max) revert TooMuchLiquidity();
         s.liquidity += liquidityAdded;
         totalLiquidity += liquidityAdded;
+        uint256 added = Math.mulDiv(liquidityAdded, valuePerRef, L_REF); // value at the TWAP, fixed from now on
+        s.principalUsd += added;
+        totalPrincipal += added;
+        emit PrincipalChanged(u, s.principalUsd);
         if (!s.joined) _join(u, s);
 
         if (t.usdtRefund > 0) USDT.safeTransfer(u, t.usdtRefund);
@@ -791,8 +803,12 @@ contract XiyangMiner is ReentrancyGuard, Ownable2Step {
         _accrue(); // pure arithmetic: no oracle / reserve dependency
         _settle(u);
 
+        uint256 cut = liquidity == s.liquidity ? s.principalUsd : Math.mulDiv(s.principalUsd, liquidity, s.liquidity);
+        s.principalUsd -= cut;
+        totalPrincipal -= cut;
         s.liquidity -= liquidity;
         totalLiquidity -= liquidity;
+        emit PrincipalChanged(u, s.principalUsd);
         if (!_eligible(u)) lossLog[u].push(Loss(accTier1, accTier2));
 
         (popOut, usdtOut) = _removeLiquidity(u, s.tokenId, liquidity, minPop, minUsdt, deadline);
@@ -890,8 +906,8 @@ contract XiyangMiner is ReentrancyGuard, Ownable2Step {
         _checkpoint();
     }
 
-    /// @notice Daily rate (bps of LP value per day), personal / tier-1 / tier-2 split (bps, sum 10000) and the LP value
-    /// needed for referral rewards. Everything accrued so far is booked under the old values first.
+    /// @notice Daily rate (bps of principal per day), personal / tier-1 / tier-2 split (bps, sum 10000) and the
+    /// principal needed for referral rewards. Everything accrued so far is booked under the old values first.
     function setRewardParams(uint16 rateBps, uint16 pBps, uint16 t1Bps, uint16 t2Bps, uint256 thresholdUsd)
         external
         onlyOwner
@@ -950,9 +966,9 @@ contract XiyangMiner is ReentrancyGuard, Ownable2Step {
     /// total index increase that _accrue() would add right now (no state change)
     function _pendingDI() internal view returns (uint256 dI) {
         uint256 last = lastAccrueTime;
-        if (accruing && valuePerRef > 0 && totalLiquidity > 0) {
-            uint256 end = Math.min(block.timestamp, uint256(lastValuationTime) + MAX_VALUATION_AGE);
-            if (end > last) dI = Math.mulDiv(valuePerRef * (end - last), ACC_PREC * dailyRateBps, BPS * 1 days);
+        if (accruing && totalPrincipal > 0) {
+            uint256 end = Math.min(block.timestamp, uint256(lastCheckpointTime) + MAX_VALUATION_AGE);
+            if (end > last) dI = Math.mulDiv(end - last, ACC_PREC * dailyRateBps, BPS * 1 days);
         }
     }
 
@@ -962,9 +978,9 @@ contract XiyangMiner is ReentrancyGuard, Ownable2Step {
         User storage s = users[u];
         personal = s.personalUsd;
         dynamic_ = s.dynamicUsd;
-        if (s.liquidity > 0) {
+        if (s.principalUsd > 0) {
             uint256 idx = accPersonal + _pendingDI() * personalBps / BPS;
-            personal += Math.mulDiv(s.liquidity, idx - s.snapP, LREF_ACC);
+            personal += Math.mulDiv(s.principalUsd, idx - s.snapP, ACC_PREC);
         }
     }
 

@@ -180,23 +180,25 @@ contract RewardTest is BaseTest {
         assertApproxEqRel(miner.totalPaidUsd(), miner.totalBaseAccruedUsd() * 85 / 100, 1e12);
     }
 
-    function test_valueChangeAccruesPerPeriod_notBackCalculated() public {
+    /// version 2: rewards follow the principal booked at deposit, not the position's later value
+    function test_valueChange_doesNotChangeRewards() public {
         _depositBoth(a, 1000e18, address(0));
-        uint256 v0 = miner.valueUsd(a);
+        uint256 pr = miner.getUser(a).principalUsd;
+        assertApproxEqRel(pr, 2000e18, 0.002e18, "principal = value put in (1000 USDT + 1000 USDT of POP)");
         _keep(12 hours, 30 minutes);
-        // move price up ~ +2% gradually (stays within TWAP deviation band)
+        (uint256 p12,) = _pending(a);
+        assertApproxEqRel(p12, pr * 85 / 10000 / 2, 1e12, "12h of 1%/day x 85% on the principal");
+        uint256 v0 = miner.valueUsd(a);
         for (uint256 i; i < 4; ++i) {
             _swap(address(usdt), pool, 5_000e18);
             _keep(1 hours, 15 minutes);
         }
-        uint256 v1 = miner.valueUsd(a);
-        assertGt(v1, v0);
+        assertGt(miner.valueUsd(a), v0, "position value went up");
+        assertEq(miner.getUser(a).principalUsd, pr, "principal unchanged");
         (uint256 pBefore,) = _pending(a);
         _keep(8 hours, 30 minutes);
         (uint256 pAfter,) = _pending(a);
-        // the last 8h accrue at the new value, earlier hours keep their old-value accrual
-        assertApproxEqRel(pAfter - pBefore, v1 * 85 / 10000 * 8 / 24, 0.002e18);
-        assertLt(pBefore, v1 * 85 / 10000 * 16 / 24, "history not re-priced at the new value");
+        assertApproxEqRel(pAfter - pBefore, pr * 85 / 10000 * 8 / 24, 1e12, "still accrues on the principal");
     }
 
     function test_adminPauseStopsAccrual_noBackPay_withdrawStillWorks() public {
@@ -221,7 +223,7 @@ contract RewardTest is BaseTest {
         assertTrue(miner.accruing());
         _keep(6 hours, 1 hours);
         (uint256 p2,) = _pending(a);
-        assertApproxEqRel(p2, miner.valueUsd(a) * 85 / 10000 * 12 / 24, 1e12, "only 12h of 24h credited");
+        assertApproxEqRel(p2, miner.getUser(a).principalUsd * 85 / 10000 * 12 / 24, 1e12, "only 12h of 24h credited");
 
         vm.prank(operator);
         miner.setAdminPaused(true);
