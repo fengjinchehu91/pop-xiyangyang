@@ -509,7 +509,7 @@ function MinePage(props: {
               </div>
             </div>
             <div className="usd-note">
-              计价额度 {fmtUnits((live?.personalUsd ?? 0n) + (live?.dynamicUsd ?? 0n), 18, 4)} USDT · 按当前喜羊羊参考价换算
+              按当前喜羊羊参考价换算
             </div>
             <button className="btn-gold wide" disabled={!canTx || !u || isOperator || snap.params.claimPaused || (live?.personalUsd ?? 0n) + (live?.dynamicUsd ?? 0n) === 0n} onClick={() => open("claim")}>
               {isOperator ? "运营钱包无需领取" : snap.params.claimPaused ? "领取暂时关闭" : "领取喜羊羊"}
