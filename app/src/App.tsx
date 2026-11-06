@@ -31,6 +31,12 @@ export default function App({ cfg }: { cfg: AppConfig }) {
   const [sheet, setSheet] = useState<SheetKind>(() => (new URLSearchParams(location.search).get("sheet") as SheetKind) || null);
   const [tick, setTick] = useState(0);
   const [toast, setToast] = useState("");
+  // pop-up messages close by themselves: "已复制推荐链接" after 1 second, longer messages after 3 seconds (tap closes at once)
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(""), toast.startsWith("已复制") ? 1000 : 3000);
+    return () => clearTimeout(t);
+  }, [toast]);
   const refParam = useMemo(() => {
     const r = new URLSearchParams(location.search).get("ref") || "";
     return /^0x[0-9a-fA-F]{40}$/.test(r) ? r : "";
