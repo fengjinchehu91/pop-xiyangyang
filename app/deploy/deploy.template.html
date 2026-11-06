@@ -62,7 +62,7 @@
     <label>PancakeSwap V3 仓位管理器</label><input id="npm" />
     <details>
       <summary>高级参数（一般不用改）</summary>
-      <label>时间加权价窗口（秒）</label><input id="twapWindow" value="1800" />
+      <label>平均价时间（秒，900 = 15 分钟；部署后不能改）</label><input id="twapWindow" value="900" />
       <label>入金时 POP 现价与平均价最大偏离（300≈3%，只影响入金，不影响计息和领取）</label><input id="maxTickDeviation" value="300" />
       <label>POP/USDT 池最低流动性 <small>（低于则停止，防操纵）</small></label><input id="minPoolLiquidity" value="1" />
       <label>喜羊羊池最低流动性 <small>（V2 池：池中 USDT 或 POP 的最少数量，按最小单位）</small></label><input id="minRewardPoolLiquidity" value="1" />
@@ -73,7 +73,7 @@
     <button class="b-line" id="btnCheck" disabled>检查所有地址（只读，不花钱）</button>
     <ul class="chk" id="checks"></ul>
     <div id="cardBox" class="hide">
-      <div class="note">价格历史容量不足：池子默认只保存很少的历史价格，交易频繁时合约会读不到 30 分钟均价而自动暂停。点下面按钮扩大容量（任何人都可以做，只付一次少量 BNB 手续费，不影响池子里的资金）。扩大后需要等至少 30 分钟再部署。</div>
+      <div class="note">价格历史容量不足：池子默认只保存很少的历史价格，交易频繁时合约会读不到平均价而自动暂停。点下面按钮扩大容量（任何人都可以做，只付一次少量 BNB 手续费，不影响池子里的资金）。扩大后需要等至少 15 分钟再部署。</div>
       <label>扩大到多少条 <small>（交易越频繁需要越多，建议 300）</small></label><input id="cardTarget" value="300" />
       <div id="cardBtns"></div>
     </div>
@@ -125,7 +125,7 @@ async function cardinalityCheck(pools) {
       const b = document.createElement("button"); b.className = "b-line"; b.textContent = `扩大「${name}」价格历史到 ${target} 条`;
       b.onclick = async () => {
         b.disabled = true; b.textContent = "请在钱包中确认…";
-        try { const tx = await new E.Contract(addr, CARD_ABI, signer).increaseObservationCardinalityNext(target); b.textContent = "链上确认中…"; await tx.wait(); b.textContent = `已扩大到 ${target} 条 ✓（等 30 分钟后重新检查）`; }
+        try { const tx = await new E.Contract(addr, CARD_ABI, signer).increaseObservationCardinalityNext(target); b.textContent = "链上确认中…"; await tx.wait(); b.textContent = `已扩大到 ${target} 条 ✓（等 15 分钟后重新检查）`; }
         catch (e) { b.disabled = false; b.textContent = "失败：" + human(e) + "（点我重试）"; }
       };
       box.appendChild(b);
@@ -204,7 +204,7 @@ $("btnCheck").onclick = async () => {
     const N = new E.Contract(v.npm, ["function factory() view returns (address)"], provider);
     ok = (same(await N.factory(), fac) ? li("ok", "仓位管理器属于同一个工厂") : li("bad", "仓位管理器和池子不属于同一个工厂")) && ok;
     const tw = Number($("twapWindow").value);
-    try { await P.observe([tw, 0]); li("ok", `POP/USDT 池有 ${tw / 60} 分钟以上的价格历史`); } catch { ok = li("bad", `POP/USDT 池的价格历史不足 ${tw / 60} 分钟：请点下方「扩大价格历史」按钮，等 30 分钟后再检查`) && ok; }
+    try { await P.observe([tw, 0]); li("ok", `POP/USDT 池有 ${tw / 60} 分钟以上的价格历史`); } catch { ok = li("bad", `POP/USDT 池的价格历史不足 ${tw / 60} 分钟：请点下方「扩大价格历史」按钮，等 ${tw / 60} 分钟后再检查`) && ok; }
     const cardPools = [["POP/USDT 池", v.pool]];
 
     const R = new E.Contract(v.rewardPool, POOL_ABI, provider);
@@ -219,7 +219,7 @@ $("btnCheck").onclick = async () => {
     if (rType === "v2") {
       const V2 = new E.Contract(v.rewardPool, ["function token0() view returns (address)", "function token1() view returns (address)", "function factory() view returns (address)", "function getReserves() view returns (uint112,uint112,uint32)"], provider);
       const [p0, p1, pf, res] = await Promise.all([V2.token0(), V2.token1(), V2.factory(), V2.getReserves()]);
-      li("info", "喜羊羊价格池是 PancakeSwap V2 池：合约会每次检查时记录价格，用至少 30 分钟的平均价给喜羊羊定价");
+      li("info", `喜羊羊价格池是 PancakeSwap V2 池：合约会每次检查时记录价格，用至少 ${tw / 60} 分钟的平均价给喜羊羊定价`);
       const wantF = LOCAL ? (q.get("v2Factory") || pf) : DEFAULTS.v2Factory;
       ok = (same(pf, wantF) ? li("ok", "V2 池来自 PancakeSwap V2 官方工厂") : li("bad", `V2 池的工厂 ${pf} 不是 PancakeSwap V2 官方工厂`)) && ok;
       const F2 = new E.Contract(pf, ["function getPair(address,address) view returns (address)"], provider);
@@ -234,7 +234,7 @@ $("btnCheck").onclick = async () => {
         const otherRes = same(other, p0) ? res[0] : res[1];
         li("info", `池中 ${os} 数量：${E.formatUnits(otherRes, od)}（池子越深越难被操纵）`);
       }
-      li("warn", "部署后需要约 30 分钟积累价格历史，期间显示「暂停」属于正常；自动检查服务会每 10 分钟记录一次价格");
+      li("warn", `部署后需要约 ${tw / 60} 分钟积累价格历史，期间显示「暂停」属于正常`);
       checked_v2 = { isV2: true, v2Factory: pf };
     } else {
       cardPools.push(["喜羊羊价格池", v.rewardPool]);
@@ -285,7 +285,7 @@ $("btnDeploy").onclick = async () => {
       管理员：${owner}${same(owner, checked.operator) ? " ✓" : " ✕"}<br>
       池子：${pool}${same(pool, checked.pool) ? " ✓" : " ✕"}<br>全价格区间：${lo} ~ ${hi}<br>
       ${EXPLORER ? `<a href="${EXPLORER}/address/${addr}" target="_blank" rel="noreferrer">在 BscScan 查看 ↗</a><br>` : ""}
-      ${checked_v2.isV2 ? "喜羊羊是 V2 池：约 30 分钟后（期间至少检查两次）才会开始运行。<br>" : ""}下一步：把合约地址和部署区块号发给我（或填进网站的 config.json），然后用运营钱包在管理后台授权。</div>
+      ${checked_v2.isV2 ? `喜羊羊是 V2 池：约 ${cfg.twapWindow / 60} 分钟后（期间至少检查两次）才会开始运行。<br>` : ""}下一步：把合约地址和部署区块号发给我（或填进网站的 config.json），然后用运营钱包在管理后台授权。</div>
       <button class="b-line" id="copy">复制合约地址</button>`;
     $("copy").onclick = () => navigator.clipboard?.writeText(addr);
   } catch (e) { showErr(human(e)); $("btnDeploy").disabled = false; }
