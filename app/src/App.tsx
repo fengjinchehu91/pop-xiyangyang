@@ -280,6 +280,14 @@ function BindGate({ cfg, snap, backend, refParam, account, canTx, demo, onConnec
   );
 }
 
+// ------------------------------------------------------------------ shown referral eligibility
+// The website shows: "入金 ≥ 100 USDT" (amount put in, valued when added; a withdrawal deducts in proportion).
+// The contract pays by LP value >= the admin threshold; the admin keeps that threshold low enough (reminder in admin).
+const SHOWN_MIN = (snap: Snapshot) => 100n * 10n ** BigInt(snap.usdtDecimals);
+function shownElig(snap: Snapshot, principal: bigint | null | undefined, contractElig: boolean): boolean {
+  return principal === null || principal === undefined ? contractElig : principal >= SHOWN_MIN(snap);
+}
+
 // ------------------------------------------------------------------ team statistics (referral page + admin lookup)
 function useTeam(backend: Backend, addr: string): TeamStats | null {
   const [t, setT] = useState<TeamStats | null>(null);
@@ -567,7 +575,7 @@ function MinePage(props: {
                   直推 {u?.direct ?? 0} · 间推 {u?.indirect ?? 0} · 合计 {(u?.direct ?? 0) + (u?.indirect ?? 0)}
                 </div>
               </div>
-              <span className={"pill " + (u?.eligible ? "ok" : "no")}>{u?.eligible ? "动态资格有效" : !u || u.liquidity === 0n ? "动态资格未生效" : `未达${usd0(snap.params.thresholdUsd)} USDT门槛`}</span>
+              <span className={"pill " + (u && u.liquidity > 0n && shownElig(snap, u.principal, u.eligible) ? "ok" : "no")}>{u && u.liquidity > 0n && shownElig(snap, u.principal, u.eligible) ? "动态资格有效" : !u || u.liquidity === 0n ? "动态资格未生效" : "未达100 USDT门槛"}</span>
             </div>
           </section>
         </>
@@ -624,25 +632,37 @@ function ReferPage({ cfg, snap, live, account, backend, onConnect, toast }: { cf
   const u = snap.user;
   const base = cfg.appUrl || location.origin + location.pathname;
   const link = `${base}?ref=${account}`;
-  const thr = snap.params.thresholdUsd;
-  const gap = u ? thr - u.valueUsd : thr;
-  const effective = list ? [...list.direct, ...list.indirect].filter((d) => d.eligible).length : null;
+  const min100 = SHOWN_MIN(snap);
+  const meElig = !!u && u.liquidity > 0n && shownElig(snap, u.principal, u.eligible);
+  const gap = u ? min100 - (u.principal ?? (u.valueUsd * min100) / (100n * E18)) : min100;
+  const [dp, setDp] = useState<Record<string, bigint> | null>(null); // downlines' amount put in
+  useEffect(() => {
+    if (!list) return;
+    const all = [...list.direct, ...list.indirect].map((d) => d.address);
+    let off = false;
+    backend.principals(all).then((x) => !off && setDp(x), () => {});
+    return () => {
+      off = true;
+    };
+  }, [list, backend]);
+  const dElig = (d: Downline) => d.valueUsd > 0n && shownElig(snap, dp ? dp[d.address.toLowerCase()] ?? null : null, d.eligible);
+  const effective = list ? [...list.direct, ...list.indirect].filter(dElig).length : null;
   const team = useTeam(backend, account);
   const rows = list ? (tab === "direct" ? list.direct : list.indirect) : [];
   return (
     <>
-      <section className={"elig " + (u?.eligible ? "ok" : "no")}>
-        <div className="elig-ic">{u?.eligible ? "✓" : "!"}</div>
+      <section className={"elig " + (meElig ? "ok" : "no")}>
+        <div className="elig-ic">{meElig ? "✓" : "!"}</div>
         <div>
-          <b>{u?.eligible ? "动态资格已生效" : "动态资格未生效"}</b>
+          <b>{meElig ? "动态资格已生效" : "动态资格未生效"}</b>
           <div>
-            {u?.eligible
+            {meElig
               ? "入金 ≥ 100 USDT 即可享受动态资格"
               : !u || u.liquidity === 0n
                 ? u?.joined
                   ? "已撤回流动性，重新添加 ≥ 100 USDT 即可恢复"
                   : "添加 ≥ 100 USDT 流动性即可享受动态资格"
-                : `距 ${usd0(thr)} USDT 门槛还差 ${fmtUnits(gap > 0n ? gap : 0n, 18)} USDT`}
+                : `距 100 USDT 还差 ${fmtUnits(gap > 0n ? gap : 0n, snap.usdtDecimals)} USDT`}
           </div>
         </div>
       </section>
@@ -687,7 +707,7 @@ function ReferPage({ cfg, snap, live, account, backend, onConnect, toast }: { cf
           <b>{effective ?? "—"}</b>
         </div>
       </section>
-      <p className="fine pad">人数只算添加过流动性的钱包，重复添加不重复计数；团队总人数包括你下面所有层级，不含你自己。有效 = 当前LP参考价值 ≥ {usd0(thr)} USDT。</p>
+      <p className="fine pad">人数只算添加过流动性的钱包，重复添加不重复计数；团队总人数包括你下面所有层级，不含你自己。有效 = 入金 ≥ 100 USDT。</p>
       <TeamCard snap={snap} team={team} />
 
       <section className="card reward dyn">
@@ -731,7 +751,7 @@ function ReferPage({ cfg, snap, live, account, backend, onConnect, toast }: { cf
                 首次入金 {fmtTime(d.firstDepositAt)} · LP {fmtUnits(d.valueUsd, 18)} USDT
               </div>
             </div>
-            <span className={"pill " + (d.eligible ? "ok" : "no")}>{d.eligible ? "有效" : "未达门槛"}</span>
+            <span className={"pill " + (dElig(d) ? "ok" : "no")}>{dElig(d) ? "有效" : "未达门槛"}</span>
           </div>
         ))}
         {nextTo !== null && (
@@ -744,7 +764,7 @@ function ReferPage({ cfg, snap, live, account, backend, onConnect, toast }: { cf
       <section className="card rules-mini">
         <b>顺延规则</b>
         <p className="fine">
-          沿推荐链向上，第一个满足资格（LP ≥ {usd0(thr)} USDT）的上级获得 {pct(snap.params.tier1Bps)}，第二个获得 {pct(snap.params.tier2Bps)}；同一人不会同时占两个档位；找不到时该部分不分配，也不扣运营钱包。顺延不改变真实推荐关系和人数统计。向上最多查找 10 层。
+          沿推荐链向上，第一个满足资格（入金 ≥ 100 USDT）的上级获得 {pct(snap.params.tier1Bps)}，第二个获得 {pct(snap.params.tier2Bps)}；同一人不会同时占两个档位；找不到时该部分不分配，也不扣运营钱包。顺延不改变真实推荐关系和人数统计。向上最多查找 10 层。
         </p>
       </section>
     </>
@@ -1183,7 +1203,11 @@ function ExitSheet({ snap, backend, account, canTx, close, done }: { snap: Snaps
         </div>
         <div className="qr-row">
           <span>动态资格</span>
-          <b className={q?.eligibleAfter ? "ok-t" : "err"}>{q ? (q.eligibleAfter ? "保持有效" : u.eligible ? "将失效" : "未达门槛") : "…"}</b>
+          {(() => {
+            const nowE = shownElig(snap, u.principal, u.eligible);
+            const after = u.principal === null || u.principal === undefined ? q?.eligibleAfter : pct < 10000 && (u.principal * BigInt(10000 - pct)) / 10000n >= SHOWN_MIN(snap);
+            return <b className={after ? "ok-t" : "err"}>{q ? (after ? "保持有效" : nowE ? "将失效" : "未达门槛") : "…"}</b>;
+          })()}
         </div>
       </div>
       <p className="fine">✓ 已累计的个人和动态奖励保留，可另行领取；退出不会强制领取喜羊羊。断开钱包不等于退出。</p>
@@ -1268,7 +1292,7 @@ function RulesSheet({ snap, close }: { snap: Snapshot | null; close: () => void 
         <p><b>计价与领取：</b>奖励按 USDT 计价记账，领取时按喜羊羊「30 分钟平均价」和「现价」中较高的那个换算，由您手动领取并支付 BNB 网络费。页面数字每 3 秒更新一次预计值，不代表链上交易。</p>
         <p><b>估值更新：</b>系统每分钟自动检查，约每 25 分钟更新一次估值（需要暂停或恢复时立即更新）；两次检查之间按上一次估值计息；超过 2 小时没有有效估值会自动停止计息，恢复后不补计。</p>
         <p><b>暂停：</b>运营钱包储备/授权不足、报价失效或管理员暂停时，停止新增入金和新增计息；已累计奖励保留；随时可以退出本金。</p>
-        <p><b>动态资格：</b>本人 LP 参考价值 ≥ {usd0(pr.thresholdUsd)} USDT。资格在下级每次结算时判定（下级操作或系统定期结算）；您自己退出导致失效时，从退出那一刻起停止获得动态奖励；恢复后不追溯。</p>
+        <p><b>动态资格：</b>入金 ≥ 100 USDT（按添加时的价格计算，撤回时按比例扣减）。资格在下级每次结算时判定（下级操作或系统定期结算）；您自己退出导致失效时，从退出那一刻起停止获得动态奖励；恢复后不追溯。</p>
         <p><b>退出：</b>固定返还 POP + USDT 及该仓位手续费，不保证等于原入金金额。</p>
         <p><b>风险：</b>奖励来自运营钱包持有的喜羊羊，不是增发，也不保证一直足额兑付；价格波动会影响到手数量与本金价值。</p>
       </div>
@@ -1284,7 +1308,39 @@ type KeeperStatus = {
   ran: boolean; at: number | null; ok: boolean; accruing: boolean | null; keeper: string | null; balance: string | null;
   lowBalance: boolean | null; daysLeft: number | null; users: number; toSettle: number; settleHours: number | null;
   lastSettle: number | null; lastCheckpoint: number | null; errors: string[];
+  eligMismatch?: number | null; eligMinValue?: string | null; eligThreshold?: string | null;
 };
+function useKeeperJson(): KeeperStatus | null {
+  const [k, setK] = useState<KeeperStatus | null>(null);
+  useEffect(() => {
+    let alive = true;
+    const load = () =>
+      fetch("./keeper.json", { cache: "no-store" })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((j) => alive && setK(j && typeof j.ran === "boolean" ? j : null))
+        .catch(() => alive && setK(null));
+    load();
+    const t = setInterval(load, 60_000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, []);
+  return k;
+}
+/** admin: wallets shown as eligible (put in >= 100 USDT) whose LP value is below the contract threshold right now */
+function EligReminder() {
+  const k = useKeeperJson();
+  if (!k || k.eligMismatch === null || k.eligMismatch === undefined) return null;
+  const usd = (x: string | null | undefined) => (x ? fmtUnits(BigInt(x), 18, 2) : "—");
+  return k.eligMismatch > 0 ? (
+    <p className="fine warn-note">
+      提醒：有 {k.eligMismatch} 个钱包页面显示动态资格有效（入金 ≥ 100 USDT），但仓位价值已低于当前门槛 {usd(k.eligThreshold)} USDT，合约暂时不给他们发推荐奖励。把门槛调到 {usd(k.eligMinValue)} USDT 以下，就能全部覆盖。
+    </p>
+  ) : (
+    <p className="fine">页面显示有效的钱包，合约都在正常发推荐奖励。其中仓位价值最低的是 {usd(k.eligMinValue)} USDT，门槛不要高于这个数。</p>
+  );
+}
 function KeeperCard({ cfg }: { cfg: AppConfig }) {
   const [k, setK] = useState<KeeperStatus | null>(null);
   const [copied, setCopied] = useState(false);
@@ -1466,11 +1522,12 @@ function AdminPage({ cfg, snap, backend, demo, isAdmin, refresh }: { cfg: AppCon
         <p className="fine">立即生效，只影响之后的收益；之前的收益按旧参数结算，不会改变。</p>
         <div className="grid-in">
           <label className="inp"><span>每日收益率（%）</span><div className="inp-row"><input inputMode="decimal" value={rate} onChange={(e) => setRate(e.target.value)} /></div></label>
-          <label className="inp"><span>动态资格门槛（USDT）</span><div className="inp-row"><input inputMode="decimal" value={thr} onChange={(e) => setThr(e.target.value)} /></div></label>
+          <label className="inp"><span>动态资格门槛（USDT，只在后台用）</span><div className="inp-row"><input inputMode="decimal" value={thr} onChange={(e) => setThr(e.target.value)} /></div></label>
           <label className="inp"><span>本人（%）</span><div className="inp-row"><input inputMode="decimal" value={pP} onChange={(e) => setPP(e.target.value)} /></div></label>
           <label className="inp"><span>一代上级（%）</span><div className="inp-row"><input inputMode="decimal" value={p1} onChange={(e) => setP1(e.target.value)} /></div></label>
           <label className="inp"><span>二代上级（%）</span><div className="inp-row"><input inputMode="decimal" value={p2} onChange={(e) => setP2(e.target.value)} /></div></label>
         </div>
+        <EligReminder />
         <p className="fine">三项比例是每日总额度的分配，加起来必须等于 100%（例：85 / 10 / 5）。当前：{pct(pr.rateBps)}/天，{pct(pr.personalBps)} / {pct(pr.tier1Bps)} / {pct(pr.tier2Bps)}，门槛 {usd0(pr.thresholdUsd)} USDT。</p>
         {rewardErr && <div className="alert">{rewardErr}</div>}
         <button className="btn-green wide" disabled={!can || !!rewardErr} onClick={() => act("rewardParams", `保存奖励参数：${rate}%/天，${pP}/${p1}/${p2}，门槛 ${thr} USDT`, { rateBps: rb, personalBps: pb, tier1Bps: b1, tier2Bps: b2, thresholdUsd: thrUsd })}>

@@ -1345,8 +1345,11 @@ var SEL = {
   owner: selector("owner()"),
   pool: selector("POOL()"),
   slot0: selector("slot0()"),
-  growObs: selector("increaseObservationCardinalityNext(uint16)")
+  growObs: selector("increaseObservationCardinalityNext(uint16)"),
+  vpr: selector("valuePerRef()"),
+  threshold: selector("dynamicThresholdUsd()")
 };
+var SHOWN_MIN_PRINCIPAL = 100n * 10n ** 18n;
 var POOL_SLOTS = 2400;
 var POOL_SLOT_STEP = 500;
 var POOL_SLOT_MIN_BNB = 15n * 10n ** 15n;
@@ -1477,11 +1480,11 @@ function config(env) {
 }
 function freshState(c) {
   return {
-    v: 2,
+    v: 3,
     miner: c.miner,
     scanned: c.deployBlock - 1,
     chunk: c.logChunk,
-    // address -> [liquidity, hasReferrer (0/1), referrer, usdtOnlyIn, bothUsdtIn, bothPopIn, bothValueUsdt]
+    // address -> [liquidity, hasReferrer (0/1), referrer, usdtOnlyIn, bothUsdtIn, bothPopIn, bothValueUsdt, principal]
     // (amounts as decimal strings in raw token units; *In = put in by deposits, net of refunds)
     users: {},
     settleCursor: 0,
@@ -1503,10 +1506,10 @@ async function loadState(env, c) {
   try {
     let s = await env.STATE.get("state", "json");
     if (memState && memState.miner === c.miner && (!s || (memState.seq || 0) >= (s.seq || 0))) s = JSON.parse(JSON.stringify(memState));
-    if (!s || s.miner !== c.miner || s.v !== 1 && s.v !== 2) return { ok: true, s: freshState(c) };
-    if (s.v === 1) {
-      s.v = 2;
-      s.usersOld = s.users;
+    if (!s || s.miner !== c.miner || ![1, 2, 3].includes(s.v)) return { ok: true, s: freshState(c) };
+    if (s.v !== 3) {
+      s.v = 3;
+      s.usersOld = s.rebuilding && s.usersOld ? s.usersOld : s.users;
       s.users = {};
       s.scanned = c.deployBlock - 1;
       s.rebuilding = true;
@@ -1516,7 +1519,7 @@ async function loadState(env, c) {
     return { ok: false, why: "\u8BFB\u53D6 KV \u5931\u8D25\uFF1A" + (e?.message || e), s: freshState(c) };
   }
 }
-var ZERO_ENTRY = () => ["0", 0, "", "0", "0", "0", "0"];
+var ZERO_ENTRY = () => ["0", 0, "", "0", "0", "0", "0", "0"];
 var add2 = (e, i, v) => e[i] = (BigInt(e[i] || "0") + v).toString();
 function applyLog(users, l) {
   if (l.removed) return;
@@ -1524,7 +1527,7 @@ function applyLog(users, l) {
   if (t0 !== T_JOINED && t0 !== T_DEPOSITED && t0 !== T_WITHDRAWN) return;
   const u = "0x" + l.topics[1].slice(26).toLowerCase();
   const e = users[u] || (users[u] = ZERO_ENTRY());
-  while (e.length < 7) e.push(e.length === 2 ? "" : "0");
+  while (e.length < 8) e.push(e.length === 2 ? "" : "0");
   if (t0 === T_JOINED) {
     const r = big2(l.topics[2]);
     e[1] = r !== 0n ? 1 : 0;
@@ -1533,18 +1536,25 @@ function applyLog(users, l) {
   }
   const w = (i) => BigInt("0x" + (l.data.slice(2 + 64 * i, 2 + 64 * (i + 1)) || "0"));
   const liq = w(0);
-  let v = BigInt(e[0]) + (t0 === T_DEPOSITED ? liq : -liq);
+  const before = BigInt(e[0]);
+  let v = before + (t0 === T_DEPOSITED ? liq : -liq);
   if (v < 0n) v = 0n;
   e[0] = v.toString();
-  if (t0 !== T_DEPOSITED) return;
+  if (t0 === T_WITHDRAWN) {
+    const pr = BigInt(e[7] || "0");
+    e[7] = (v === 0n || before === 0n ? 0n : pr - pr * (liq < before ? liq : before) / before).toString();
+    return;
+  }
   const usdtIn = w(1), popIn = w(2), swapped = w(3), usdtRefund = w(5), popRefund = w(6);
   const pos = (x) => x > 0n ? x : 0n;
   if (popIn === 0n) {
     add2(e, 3, pos(usdtIn - usdtRefund));
+    add2(e, 7, pos(usdtIn - usdtRefund));
   } else {
     add2(e, 4, pos(usdtIn - usdtRefund));
     add2(e, 5, pos(popIn - popRefund));
     add2(e, 6, pos(2n * (usdtIn - swapped - usdtRefund)));
+    add2(e, 7, pos(2n * (usdtIn - swapped - usdtRefund)));
   }
 }
 var settleSource = (s) => s.rebuilding && s.usersOld ? s.usersOld : s.users;
@@ -1672,7 +1682,7 @@ async function runOnce(env) {
       savedAt: 0,
       seq: 0,
       load: Math.round((x.load || 1) * 4),
-      status: { ok: t.ok, errors: t.errors, actions: t.actions, accruing: t.accruing, reasons: t.reasons, keeper: t.keeper, users: t.users, toSettle: t.toSettle }
+      status: { ok: t.ok, errors: t.errors, actions: t.actions, accruing: t.accruing, reasons: t.reasons, keeper: t.keeper, users: t.users, toSettle: t.toSettle, eligMismatch: t.eligMismatch }
     });
   };
   const fp0 = loaded.ok ? fingerprint(s) : null;
@@ -1711,6 +1721,8 @@ async function runOnce(env) {
       ethCall("0x" + SEL.operator),
       ethCall("0x" + SEL.owner),
       ethCall("0x" + SEL.pool),
+      ethCall("0x" + SEL.vpr),
+      ethCall("0x" + SEL.threshold),
       ...s.pool ? [["eth_call", [{ to: s.pool, data: "0x" + SEL.slot0 }, "latest"]]] : []
     ]);
     const need = (i, what) => {
@@ -1821,9 +1833,27 @@ async function runOnce(env) {
       st.accruing = wouldRun;
     }
     st.gasPrice = gasPrice.toString();
+    if (!s.rebuilding && !r[13].error && !r[14].error) {
+      const vpr = Number(big2(r[13].result)) / 1e27;
+      const thr = Number(big2(r[14].result));
+      const minP = Number(SHOWN_MIN_PRINCIPAL);
+      let n = 0;
+      let minV = Infinity;
+      for (const a in s.users) {
+        const e = s.users[a];
+        const liq = +e[0];
+        if (liq <= 0 || +(e[7] || 0) < minP) continue;
+        const val = liq * vpr;
+        if (val < minV) minV = val;
+        if (val < thr) n++;
+      }
+      st.eligMismatch = n;
+      st.eligMinValue = Number.isFinite(minV) ? intStr(minV) : null;
+      st.eligThreshold = intStr(thr);
+    }
     if (!r[12].error && r[12].result && r[12].result.length >= 42) s.pool = "0x" + String(r[12].result).slice(-40).toLowerCase();
-    if (s.pool && r[13] && !r[13].error && r[13].result && r[13].result.length >= 2 + 64 * 5) {
-      const slotsNext = Number(BigInt("0x" + r[13].result.slice(2 + 64 * 4, 2 + 64 * 5)));
+    if (s.pool && r[15] && !r[15].error && r[15].result && r[15].result.length >= 2 + 64 * 5) {
+      const slotsNext = Number(BigInt("0x" + r[15].result.slice(2 + 64 * 4, 2 + 64 * 5)));
       st.poolSlots = slotsNext;
       if (!stuck && slotsNext < POOL_SLOTS && balance >= POOL_SLOT_MIN_BNB) {
         const n = Math.min(POOL_SLOTS, slotsNext + POOL_SLOT_STEP);
@@ -2058,7 +2088,11 @@ function statusJson(s) {
     settleHours: st?.settleHours ?? null,
     lastSettle: s?.lastSettleTx?.at ?? null,
     actions: st?.actions ?? [],
-    errors: st?.errors ?? []
+    errors: st?.errors ?? [],
+    // admin reminder: shown as eligible on the website but below the contract threshold right now
+    eligMismatch: st?.eligMismatch ?? null,
+    eligMinValue: st?.eligMinValue ?? null,
+    eligThreshold: st?.eligThreshold ?? null
   };
 }
 var pageMemo = { t: 0, s: null };
@@ -2069,7 +2103,7 @@ var worker_default = {
   async fetch(request, env) {
     const url = new URL(request.url);
     const p = url.pathname.replace(/\/+$/, "") || "/";
-    if (p !== "/" && p !== "/keeper" && p !== "/keeper.json" && p !== "/keeper/team.json") return new Response("Not found", { status: 404 });
+    if (p !== "/" && p !== "/keeper" && p !== "/keeper.json" && p !== "/keeper/team.json" && p !== "/keeper/principal.json") return new Response("Not found", { status: 404 });
     let s = pageMemo.s;
     if (Date.now() - pageMemo.t > 2e4) {
       try {
@@ -2078,6 +2112,20 @@ var worker_default = {
         s = null;
       }
       if (s) pageMemo = { t: Date.now(), s };
+    }
+    if (p === "/keeper/principal.json") {
+      const list = (url.searchParams.get("u") || "").split(",").map((x) => x.trim().toLowerCase()).filter((x) => /^0x[0-9a-f]{40}$/.test(x)).slice(0, 300);
+      let out;
+      if (!s || !s.users) out = { ok: false, why: "no data yet" };
+      else if (s.rebuilding) out = { ok: false, why: "rebuilding" };
+      else {
+        const pr = {};
+        for (const a of list) pr[a] = s.users[a] ? s.users[a][7] || "0" : "0";
+        out = { ok: true, at: s.status?.at ?? null, p: pr };
+      }
+      return new Response(JSON.stringify(out), {
+        headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }
+      });
     }
     if (p === "/keeper/team.json") {
       const u = url.searchParams.get("u") || "";

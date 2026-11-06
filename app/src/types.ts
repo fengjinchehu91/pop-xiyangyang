@@ -9,7 +9,8 @@ export interface UserView {
   claimedDynamic: bigint;
   referrer: string;
   joined: boolean;
-  eligible: boolean;
+  eligible: boolean; // the contract's own judgement (LP value >= admin threshold)
+  principal?: bigint | null; // amount put in (USDT raw, withdrawals deducted in proportion); null = not available
   direct: number;
   indirect: number;
   firstDepositAt: number;
@@ -99,6 +100,7 @@ export interface Downline {
   firstDepositAt: number;
   valueUsd: bigint;
   eligible: boolean;
+  principal?: bigint | null;
 }
 
 export type StepStatus = "idle" | "wallet" | "pending" | "done" | "error" | "skipped";

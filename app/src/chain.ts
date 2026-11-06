@@ -185,7 +185,10 @@ export class ChainBackend {
         t(this.addr.pop).balanceOf(account),
         t(this.addr.reward).balanceOf(account),
       ]);
-      const amounts = u.liquidity > 0n ? await this.positionAmounts(u.liquidity) : [0n, 0n];
+      const [amounts, prin] = await Promise.all([
+        u.liquidity > 0n ? this.positionAmounts(u.liquidity) : Promise.resolve([0n, 0n] as [bigint, bigint]),
+        this.principals([account]).catch(() => null),
+      ]);
       snap.user = {
         liquidity: u.liquidity,
         valueUsd: val,
@@ -198,6 +201,7 @@ export class ChainBackend {
         referrer: u.referrer === ZERO ? "" : u.referrer,
         joined: u.joined,
         eligible: elig,
+        principal: prin ? prin[account.toLowerCase()] ?? null : null,
         direct: Number(u.directCount),
         indirect: Number(u.indirectCount),
         firstDepositAt: Number(u.firstDepositAt),
@@ -545,6 +549,18 @@ export class ChainBackend {
       if (this.minerRpc === this.miner) throw e;
       return await this.minerRpc.queryFilter(filter, start, end);
     }
+  }
+
+  /** amount each wallet put in (USDT raw, withdrawals deducted in proportion), from the automatic check service */
+  async principals(addrs: string[]): Promise<Record<string, bigint> | null> {
+    if (!addrs.length) return {};
+    const r = await fetch(`./keeper/principal.json?u=${addrs.slice(0, 300).join(",")}`, { cache: "no-store" });
+    if (!r.ok) return null;
+    const j = await r.json();
+    if (!j || !j.ok || !j.p) return null;
+    const out: Record<string, bigint> = {};
+    for (const a in j.p) out[a.toLowerCase()] = BigInt(j.p[a]);
+    return out;
   }
 
   /** team statistics, worked out by the automatic check service from the chain's records (same website) */

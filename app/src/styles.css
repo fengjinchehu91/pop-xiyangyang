@@ -277,3 +277,4 @@ a { color: var(--g6); }
 .team .kv b { word-break: normal; }
 .team .nw { display: block; font-style: normal; white-space: nowrap; }
 @media (max-width: 374px) { .team .kv b { font-size: 13px; } }
+.warn-note { color: #9a5b00; background: #fff4dd; border-radius: 10px; padding: 8px 10px; }

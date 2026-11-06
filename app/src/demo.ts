@@ -72,6 +72,7 @@ export class DemoBackend {
         referrer: addr(7),
         joined: this.base.liquidity > 0n || true,
         eligible: this.base.valueUsd >= 100n * E18,
+        principal: 600n * E18,
         direct: 12,
         indirect: 28,
         firstDepositAt: now() - 86400 * 20,
@@ -183,6 +184,12 @@ export class DemoBackend {
       { kind, title: "动态奖励 · 第二档 5%", sign: "+", lines: [{ label: "来源", value: "0x4F9E…3C77" }, { label: "入账额度", value: "0.2600 USDT 计价（领取时换算喜羊羊）" }], time: t - 3600 * 9, tx, status: "已完成" },
     ];
     return { items: kind === "liquidity" ? L : kind === "claim" ? C : D, nextTo: null };
+  }
+
+  async principals(addrs: string[]): Promise<Record<string, bigint> | null> {
+    const out: Record<string, bigint> = {};
+    addrs.forEach((a, i) => (out[a.toLowerCase()] = BigInt([150, 80, 320, 100, 60, 500][i % 6]) * E18));
+    return out;
   }
 
   async teamStats(_addr: string): Promise<TeamStats | null> {
