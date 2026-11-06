@@ -16,6 +16,8 @@ const usd0 = (x: bigint) => fmtUnits(x, 18, 0);
 
 const A = (p: string) => ((window as any).__XYY_ASSETS__?.[p] as string) || `./assets/${p}`;
 const SLIP_BPS = 100; // 1%
+const ZAP_SLIP_BPS = 500; // "只用 USDT" 添加时的滑点保护 5%（合约先把一半 USDT 换成 POP）
+const addSlip = (mode: "usdt" | "both") => (mode === "usdt" ? ZAP_SLIP_BPS : SLIP_BPS);
 const QUOTE_TTL = 60_000;
 
 // =====================================================================================================
@@ -1066,7 +1068,7 @@ function AddSheet({ cfg, snap, backend, refParam, account, canTx, close, done }:
     clearTimeout(timer.current);
     timer.current = setTimeout(() => {
       backend
-        .quoteAdd(mode, usdtAmt, popAmt, SLIP_BPS)
+        .quoteAdd(mode, usdtAmt, popAmt, addSlip(mode))
         .then(setQ)
         .catch((e) => setQErr("报价失败：" + humanError(e)));
     }, 400);
@@ -1173,7 +1175,7 @@ function AddSheet({ cfg, snap, backend, refParam, account, canTx, close, done }:
             {mode === "usdt"
               ? "只需要 USDT：合约会自动把大约一半换成 POP，再一起加入池子。"
               : "输入任意一边，另一边会按池子当前价格自动算好，两种币一起加入池子。"}
-            全价格区间，无需设置区间；滑点保护 {SLIP_BPS / 100}%，报价有效期 10 分钟。实际以链上成交为准，没用完的代币会原路退回。
+            全价格区间，无需设置区间；滑点保护 {addSlip(mode) / 100}%，报价有效期 10 分钟。实际以链上成交为准，没用完的代币会原路退回。
             {expired && <b className="err"> 报价已过期，请刷新。</b>}
           </p>
         </div>
@@ -1205,7 +1207,7 @@ function AddSheet({ cfg, snap, backend, refParam, account, canTx, close, done }:
       {allDone ? (
         <button className="btn-green wide" onClick={close}>完成</button>
       ) : expired ? (
-        <button className="btn-gold wide" onClick={() => backend.quoteAdd(mode, usdtAmt!, popAmt!, SLIP_BPS).then(setQ)}>刷新报价</button>
+        <button className="btn-gold wide" onClick={() => backend.quoteAdd(mode, usdtAmt!, popAmt!, addSlip(mode)).then(setQ)}>刷新报价</button>
       ) : (
         <button className="btn-green wide" disabled={!canTx || !q || running || !!overU || !!overP || pairing || needConfirmRef || refInvalid} onClick={go}>
           {running ? "处理中…" : refInvalid ? "推荐人还没有入金" : steps?.some((x) => x.status === "error") ? "重试" : "授权并添加"}
