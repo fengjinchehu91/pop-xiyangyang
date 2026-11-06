@@ -241,8 +241,6 @@ export class ChainBackend {
       };
       snap.balances = { usdt: bu, pop: bp, reward: br };
       snap.old = old;
-      const me = account.toLowerCase();
-      if (this.old && [owner, operator].some((x: string) => String(x).toLowerCase() === me)) snap.oldStatus = await this.oldStatus().catch(() => null);
     }
     return snap;
   }

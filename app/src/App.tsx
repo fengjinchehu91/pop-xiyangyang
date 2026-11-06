@@ -5,11 +5,10 @@ import { DemoBackend } from "./demo";
 import type { AddQuote, AdminEvent, AdminUserRow, Downline, ExitQuote, Rec, RecKind, Snapshot, Step, TeamStats } from "./types";
 import { REASON_TEXT } from "./types";
 import { applySlippage, E18, fmtTime, fmtUnits, parseUnitsSafe, short, usdToToken } from "./fmt";
-import type { OldStatus } from "./types";
 
 type Backend = ChainBackend | DemoBackend;
 type Page = "mine" | "refer" | "records" | "admin";
-type SheetKind = null | "add" | "exit" | "claim" | "rules" | "old";
+type SheetKind = null | "add" | "exit" | "claim" | "rules";
 
 /** basis points -> "1%" / "0.5%" */
 const pct = (bps: number) => `${Number((bps / 100).toFixed(2))}%`;
@@ -143,7 +142,6 @@ export default function App({ cfg }: { cfg: AppConfig }) {
             canTx={canTx}
             demo={demo}
             onConnect={connect}
-            openOld={() => setSheet("old")}
             done={() => {
               setBound(true);
               setDemoGate(false);
@@ -190,7 +188,6 @@ export default function App({ cfg }: { cfg: AppConfig }) {
         )}
         {sheet === "claim" && snap && <ClaimSheet snap={snap} live={live} backend={backend} canTx={canTx} close={() => setSheet(null)} done={refresh} />}
         {sheet === "rules" && <RulesSheet snap={snap} close={() => setSheet(null)} />}
-        {sheet === "old" && snap?.old && <OldSheet snap={snap} backend={backend} canTx={canTx} close={() => setSheet(null)} done={refresh} />}
         {toast && (
           <div className="toast" onClick={() => setToast("")}>
             {toast}
@@ -203,7 +200,7 @@ export default function App({ cfg }: { cfg: AppConfig }) {
 
 // =====================================================================================================
 /** 打开网站先绑定推荐人：推荐链接里的地址直接显示出来，确认后用钱包签一次，成功后进入网站 */
-function BindGate({ cfg, snap, backend, refParam, account, canTx, demo, onConnect, openOld, done }: { cfg: AppConfig; snap: Snapshot; backend: Backend; refParam: string; account: string; canTx: boolean; demo: boolean; onConnect: () => void; openOld: () => void; done: () => void }) {
+function BindGate({ cfg, snap, backend, refParam, account, canTx, demo, onConnect, done }: { cfg: AppConfig; snap: Snapshot; backend: Backend; refParam: string; account: string; canTx: boolean; demo: boolean; onConnect: () => void; done: () => void }) {
   void cfg;
   const [typed, setTyped] = useState("");
   // 老用户：自动沿用旧矿池里的推荐人
@@ -287,79 +284,7 @@ function BindGate({ cfg, snap, backend, refParam, account, canTx, demo, onConnec
         )}
         <p className="fine gate-fine">绑定关系记录在链上，绑定后不能修改。绑定需要钱包确认一次，会花极少的 BNB 手续费。</p>
       </section>
-      <OldPoolCard snap={snap} open={openOld} />
     </main>
-  );
-}
-
-// ------------------------------------------------------------------ previous contract (migration)
-/** 旧矿池里还有流动性或没领的奖励时显示：先撤回并领取，再重新添加 */
-function OldPoolCard({ snap, open }: { snap: Snapshot; open: () => void }) {
-  const o = snap.old;
-  if (!o) return null;
-  const pend = o.personalUsd + o.dynamicUsd;
-  if (o.liquidity === 0n && pend === 0n) return null;
-  const tok = usdToToken(pend, snap.rewardPrice, snap.rewardDecimals);
-  return (
-    <section className="card old-pool">
-      <b>旧矿池还有您的资产</b>
-      <p className="fine">请先从旧矿池撤回并领取奖励，再重新添加。</p>
-      <div className="kv">
-        {o.liquidity > 0n && <div><span>旧矿池流动性（参考价值）</span><b>{fmtUnits(o.valueUsd, 18)} USDT</b></div>}
-        {pend > 0n && <div><span>旧矿池待领取（预计）</span><b>{tok !== null ? fmtUnits(tok, snap.rewardDecimals) : "—"} 喜羊羊</b></div>}
-      </div>
-      <button className="btn-gold wide" onClick={open}>从旧矿池撤回并领取</button>
-    </section>
-  );
-}
-
-function OldSheet({ snap, backend, canTx, close, done }: { snap: Snapshot; backend: Backend; canTx: boolean; close: () => void; done: () => void }) {
-  const [o] = useState(snap.old!); // the amounts shown when the sheet was opened
-  const [steps, setSteps] = useState<Step[] | null>(null);
-  const [running, setRunning] = useState(false);
-  const pend = o.personalUsd + o.dynamicUsd;
-  const tok = usdToToken(pend, snap.rewardPrice, snap.rewardDecimals);
-  const go = async () => {
-    const s: Step[] = steps?.some((x) => x.status === "error")
-      ? steps.map((x) => (x.status === "error" ? { ...x, status: "idle" as const, error: undefined } : x))
-      : [
-          { label: "从旧矿池撤回全部流动性", status: "idle" },
-          { label: "领取旧矿池的喜羊羊", status: "idle" },
-        ];
-    setSteps(s);
-    setRunning(true);
-    try {
-      await backend.migrateOld(SLIP_BPS, s, setSteps);
-    } catch (e) {
-      setSteps((p) => (p ? p.map((x) => (x.status === "idle" || x.status === "wallet" ? { ...x, status: "error", error: humanError(e) } : x)) : p));
-    } finally {
-      setRunning(false);
-      done();
-    }
-  };
-  const allDone = !!steps && steps.every((x) => x.status === "done" || x.status === "skipped");
-  return (
-    <Sheet title="从旧矿池撤回并领取" close={close} icon={<span className="ic-c">⊖</span>}>
-      <div className="quote">
-        <div className="qr-row">
-          <span>旧矿池流动性（参考价值）</span>
-          <b>{fmtUnits(o.valueUsd, 18)} USDT</b>
-        </div>
-        <div className="qr-row">
-          <span>旧矿池待领取（预计）</span>
-          <b>{tok !== null ? fmtUnits(tok, snap.rewardDecimals) : "—"} 喜羊羊</b>
-        </div>
-        <p className="fine">撤回后 POP + USDT 及手续费直接回到您的钱包；奖励按领取时的价格换算。之后在新矿池重新添加即可。</p>
-      </div>
-      {steps && <Steps steps={steps} />}
-      {allDone ? (
-        <button className="btn-green wide" onClick={close}>完成</button>
-      ) : (
-        <button className="btn-gold wide" disabled={!canTx || running} onClick={go}>
-          {running ? "处理中…" : steps?.some((x) => x.status === "error") ? "重试" : "确认"}
-        </button>
-      )}
-    </Sheet>
   );
 }
 
@@ -552,7 +477,6 @@ function MinePage(props: {
         tag="每日 0.5%～1% · 随存随取"
       />
       <StatusLine snap={snap} account={account} />
-      {account && <OldPoolCard snap={snap} open={() => open("old")} />}
 
       {!account ? (
         <div className="card center">
@@ -1378,24 +1302,6 @@ type KeeperStatus = {
   lastSettle: number | null; lastCheckpoint: number | null; errors: string[];
   legacy?: { miner: string; done: boolean; started: boolean; left: number } | null; // final referral settlement of the previous contract
 };
-function useKeeperJson(): KeeperStatus | null {
-  const [k, setK] = useState<KeeperStatus | null>(null);
-  useEffect(() => {
-    let alive = true;
-    const load = () =>
-      fetch("./keeper.json", { cache: "no-store" })
-        .then((r) => (r.ok ? r.json() : null))
-        .then((j) => alive && setK(j && typeof j.ran === "boolean" ? j : null))
-        .catch(() => alive && setK(null));
-    load();
-    const t = setInterval(load, 60_000);
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
-  }, []);
-  return k;
-}
 function KeeperCard({ cfg }: { cfg: AppConfig }) {
   const [k, setK] = useState<KeeperStatus | null>(null);
   const [copied, setCopied] = useState(false);
@@ -1546,7 +1452,6 @@ function AdminPage({ cfg, snap, backend, demo, isAdmin, refresh }: { cfg: AppCon
       <StatusLine snap={snap} force />
 
       <KeeperCard cfg={cfg} />
-      {snap.oldStatus && <OldAdminCard cfg={cfg} snap={snap} old={snap.oldStatus} backend={backend} can={can} refresh={refresh} />}
 
       <section className="card btn-col">
         <b>运行控制</b>
@@ -1635,88 +1540,6 @@ function AdminPage({ cfg, snap, backend, demo, isAdmin, refresh }: { cfg: AppCon
         ))}
       </section>
     </>
-  );
-}
-
-/** previous contract: pause it, see who still has something there, revoke its approval, end it */
-function OldAdminCard({ cfg, snap, old, backend, can, refresh }: { cfg: AppConfig; snap: Snapshot; old: OldStatus; backend: Backend; can: boolean; refresh: () => void }) {
-  const k = useKeeperJson();
-  const [steps, setSteps] = useState<Step[] | null>(null);
-  const [left, setLeft] = useState<{ wallets: number; withLiquidity: number; unclaimed: number; unclaimedUsd: bigint } | null>(null);
-  const [prog, setProg] = useState<number | null>(null);
-  const [err, setErr] = useState("");
-  const [revokeText, setRevokeText] = useState("");
-  const [endText, setEndText] = useState("");
-  const d = snap.rewardDecimals;
-  const act = async (a: string, label: string) => {
-    const st: Step[] = [{ label, status: "idle" }];
-    setSteps(st);
-    try {
-      if (await backend.admin(a as any, 0n, st, setSteps)) refresh();
-    } catch (e) {
-      setSteps([{ ...st[0], status: "error", error: humanError(e) }]);
-    }
-  };
-  const check = async () => {
-    setErr("");
-    setLeft(null);
-    setProg(0);
-    try {
-      setLeft(await backend.oldLeftovers((x, t) => setProg(Math.floor((x / t) * 100))));
-    } catch (e) {
-      setErr("读取失败：" + humanError(e));
-    } finally {
-      setProg(null);
-    }
-  };
-  const lg = k?.legacy && k.legacy.miner.toLowerCase() === old.address.toLowerCase() ? k.legacy : null;
-  const settleText = !lg ? "—" : lg.done ? "已完成" : lg.started ? `进行中（还剩 ${lg.left} 个钱包）` : "旧合约暂停后自动进行";
-  return (
-    <section className="card btn-col">
-      <b>旧合约（迁移用）</b>
-      <div className="kv">
-        <div><span>合约地址</span><b className="mono">{short(old.address)} <a href={`${cfg.explorer}/address/${old.address}`} target="_blank" rel="noreferrer">↗</a></b></div>
-        <div><span>状态</span><b className={old.ended || old.adminPaused ? "" : "err"}>{old.ended ? "已永久结束" : old.adminPaused ? "已暂停（用户只能撤回和领取）" : old.accruing ? "仍在计息" : "已停止计息"}</b></div>
-        <div><span>旧矿池剩余流动性</span><b>{fmtUnits(old.tvlUsd, 18)} USDT</b></div>
-        <div><span>运营钱包给旧合约的剩余授权</span><b>{fmtUnits(old.reserve.allowance, d)} 喜羊羊</b></div>
-        <div><span>旧合约推荐奖励最终结算</span><b>{settleText}</b></div>
-      </div>
-      <button className="btn-line wide" disabled={prog !== null} onClick={check}>{prog !== null ? `正在检查… ${prog}%` : "检查还有多少人没撤回、没领取"}</button>
-      {err && <div className="alert">{err}</div>}
-      {left && (
-        <p className={"fine" + (left.withLiquidity || left.unclaimed ? " warn-note" : "")}>
-          旧合约共 {left.wallets} 个钱包：还有 {left.withLiquidity} 个没撤回，{left.unclaimed} 个还有奖励没领（约 {fmtUnits(left.unclaimedUsd, 18)} USDT 计价）。
-          {left.withLiquidity || left.unclaimed ? "" : "全部处理完了，可以撤销授权。"}
-        </p>
-      )}
-      {!old.adminPaused && !old.ended && (
-        <>
-          <button className="btn-line wide danger" disabled={!can} onClick={() => act("oldPause", "暂停旧合约")}>暂停旧合约</button>
-          <p className="fine">暂停后旧合约不再计息、不能再入金；用户随时可以撤回和领取已累计的奖励。</p>
-        </>
-      )}
-      {old.reserve.allowance > 0n && (
-        <div className="danger-box">
-          <b>撤销旧合约的喜羊羊授权</b>
-          <p className="fine">撤销后旧合约就不能再从运营钱包发奖励，旧合约里还没领的奖励也就领不了了。请先点上面的“检查”，确认大家都领完了再撤销。请输入「确认撤销」后才能点击。</p>
-          <div className="inp-row">
-            <input placeholder="确认撤销" value={revokeText} onChange={(e) => setRevokeText(e.target.value)} />
-          </div>
-          <button className="btn-line wide danger" disabled={!can || revokeText.trim() !== "确认撤销"} onClick={() => act("oldRevoke", "撤销旧合约的喜羊羊授权")}>撤销旧合约授权</button>
-        </div>
-      )}
-      {!old.ended && (
-        <div className="danger-box">
-          <b>永久结束旧合约</b>
-          <p className="fine">结束后不能恢复。用户仍可撤回和领取（只要授权还在）。请输入「确认结束」后才能点击。</p>
-          <div className="inp-row">
-            <input placeholder="确认结束" value={endText} onChange={(e) => setEndText(e.target.value)} />
-          </div>
-          <button className="btn-line wide danger" disabled={!can || endText.trim() !== "确认结束"} onClick={() => act("oldEnd", "永久结束旧合约")}>永久结束旧合约</button>
-        </div>
-      )}
-      {steps && <Steps steps={steps} />}
-    </section>
   );
 }
 
