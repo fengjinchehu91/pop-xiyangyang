@@ -796,7 +796,7 @@ export class ChainBackend {
         } as Rec;
       return {
         kind,
-        title: `动态奖励 · ${Number(a.tier) === 1 ? "第一档 10%" : "第二档 5%"}`,
+        title: `动态奖励 · ${Number(a.tier) === 1 ? "直推 10%" : "间推 5%"}`,
         sign: "+",
         lines: [
           { label: "来源", value: short(a.from) },

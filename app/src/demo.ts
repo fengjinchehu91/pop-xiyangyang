@@ -214,8 +214,8 @@ export class DemoBackend {
       { kind, title: "领取喜羊羊", sign: "+", lines: [{ label: "实际收到", value: "5,000.00 喜羊羊" }, { label: "其中个人/动态", value: "4,350.00 / 650.00" }], time: t - 86400 * 6, tx, status: "已完成" },
     ];
     const D: Rec[] = [
-      { kind, title: "动态奖励 · 第一档 10%", sign: "+", lines: [{ label: "来源", value: "0x8D31…70A2" }, { label: "入账额度", value: "1.2500 USDT 计价（领取时换算喜羊羊）" }], time: t - 3600 * 2, tx, status: "已完成" },
-      { kind, title: "动态奖励 · 第二档 5%", sign: "+", lines: [{ label: "来源", value: "0x4F9E…3C77" }, { label: "入账额度", value: "0.2600 USDT 计价（领取时换算喜羊羊）" }], time: t - 3600 * 9, tx, status: "已完成" },
+      { kind, title: "动态奖励 · 直推 10%", sign: "+", lines: [{ label: "来源", value: "0x8D31…70A2" }, { label: "入账额度", value: "1.2500 USDT 计价（领取时换算喜羊羊）" }], time: t - 3600 * 2, tx, status: "已完成" },
+      { kind, title: "动态奖励 · 间推 5%", sign: "+", lines: [{ label: "来源", value: "0x4F9E…3C77" }, { label: "入账额度", value: "0.2600 USDT 计价（领取时换算喜羊羊）" }], time: t - 3600 * 9, tx, status: "已完成" },
     ];
     return { items: kind === "liquidity" ? L : kind === "claim" ? C : D, nextTo: null };
   }
