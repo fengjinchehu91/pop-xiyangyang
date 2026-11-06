@@ -5,10 +5,11 @@ import { DemoBackend } from "./demo";
 import type { AddQuote, AdminEvent, AdminUserRow, Downline, ExitQuote, Rec, RecKind, Snapshot, Step, TeamStats } from "./types";
 import { REASON_TEXT } from "./types";
 import { applySlippage, E18, fmtTime, fmtUnits, parseUnitsSafe, short, usdToToken } from "./fmt";
+import type { OldStatus } from "./types";
 
 type Backend = ChainBackend | DemoBackend;
 type Page = "mine" | "refer" | "records" | "admin";
-type SheetKind = null | "add" | "exit" | "claim" | "rules";
+type SheetKind = null | "add" | "exit" | "claim" | "rules" | "old";
 
 /** basis points -> "1%" / "0.5%" */
 const pct = (bps: number) => `${Number((bps / 100).toFixed(2))}%`;
@@ -105,9 +106,11 @@ export default function App({ cfg }: { cfg: AppConfig }) {
   const [demoGate, setDemoGate] = useState(demo && new URLSearchParams(location.search).get("gate") !== "0");
   const me = account.toLowerCase();
   const isStaff = !!me && [snap?.owner, snap?.operator].some((x) => !!x && x.toLowerCase() === me);
+  // 旧矿池里本来就没有推荐人的老钱包，沿用原来的情况，直接进入
+  const oldTop = !!snap?.old && snap.old.joined && !snap.old.referrer;
   const gate = demo
     ? demoGate
-    : !!snap?.configured && !bound && !isStaff && (!account || !snap.user || (!snap.user.referrer && !snap.user.joined));
+    : !!snap?.configured && !bound && !isStaff && (!account || !snap.user || (!snap.user.referrer && !snap.user.joined && !oldTop));
 
   return (
     <div className="shell">
@@ -140,6 +143,7 @@ export default function App({ cfg }: { cfg: AppConfig }) {
             canTx={canTx}
             demo={demo}
             onConnect={connect}
+            openOld={() => setSheet("old")}
             done={() => {
               setBound(true);
               setDemoGate(false);
@@ -186,6 +190,7 @@ export default function App({ cfg }: { cfg: AppConfig }) {
         )}
         {sheet === "claim" && snap && <ClaimSheet snap={snap} live={live} backend={backend} canTx={canTx} close={() => setSheet(null)} done={refresh} />}
         {sheet === "rules" && <RulesSheet snap={snap} close={() => setSheet(null)} />}
+        {sheet === "old" && snap?.old && <OldSheet snap={snap} backend={backend} canTx={canTx} close={() => setSheet(null)} done={refresh} />}
         {toast && (
           <div className="toast" onClick={() => setToast("")}>
             {toast}
@@ -198,10 +203,12 @@ export default function App({ cfg }: { cfg: AppConfig }) {
 
 // =====================================================================================================
 /** 打开网站先绑定推荐人：推荐链接里的地址直接显示出来，确认后用钱包签一次，成功后进入网站 */
-function BindGate({ cfg, snap, backend, refParam, account, canTx, demo, onConnect, done }: { cfg: AppConfig; snap: Snapshot; backend: Backend; refParam: string; account: string; canTx: boolean; demo: boolean; onConnect: () => void; done: () => void }) {
+function BindGate({ cfg, snap, backend, refParam, account, canTx, demo, onConnect, openOld, done }: { cfg: AppConfig; snap: Snapshot; backend: Backend; refParam: string; account: string; canTx: boolean; demo: boolean; onConnect: () => void; openOld: () => void; done: () => void }) {
   void cfg;
   const [typed, setTyped] = useState("");
-  const fromLink = refParam || (demo ? "0x4f9e2b7c1d8a3e6f5b0c9d2e1a7b8c3d4e5f3c77" : "");
+  // 老用户：自动沿用旧矿池里的推荐人
+  const oldRef = snap.old?.referrer || "";
+  const fromLink = oldRef || refParam || (demo ? "0x4f9e2b7c1d8a3e6f5b0c9d2e1a7b8c3d4e5f3c77" : "");
   const ref = fromLink || (typed.match(/0x[0-9a-fA-F]{40}/)?.[0] ?? "");
   const self = !!ref && !!account && ref.toLowerCase() === account.toLowerCase();
   const [joined, setJoined] = useState<boolean | null>(null);
@@ -240,7 +247,7 @@ function BindGate({ cfg, snap, backend, refParam, account, canTx, demo, onConnec
 
         {fromLink ? (
           <div className="gate-ref">
-            <span>推荐人</span>
+            <span>{oldRef ? "推荐人（沿用旧矿池的推荐关系）" : "推荐人"}</span>
             <b className="mono">{fromLink}</b>
           </div>
         ) : (
@@ -256,7 +263,11 @@ function BindGate({ cfg, snap, backend, refParam, account, canTx, demo, onConnec
         {ref && (self ? (
           <p className="gate-msg bad">不能绑定自己为推荐人，请使用别人的推荐链接打开。</p>
         ) : joined === false ? (
-          <p className="gate-msg bad">这个推荐人还没有添加过流动性，暂时不能绑定。请让推荐人先添加一次流动性，再用他的推荐链接打开。</p>
+          oldRef ? (
+            <p className="gate-msg bad">请等推荐人先在新矿池添加流动性后再绑定。</p>
+          ) : (
+            <p className="gate-msg bad">这个推荐人还没有添加过流动性，暂时不能绑定。请让推荐人先添加一次流动性，再用他的推荐链接打开。</p>
+          )
         ) : joined === true ? (
           <p className="gate-msg ok-txt">✓ 推荐人有效，可以绑定</p>
         ) : (
@@ -276,16 +287,80 @@ function BindGate({ cfg, snap, backend, refParam, account, canTx, demo, onConnec
         )}
         <p className="fine gate-fine">绑定关系记录在链上，绑定后不能修改。绑定需要钱包确认一次，会花极少的 BNB 手续费。</p>
       </section>
+      <OldPoolCard snap={snap} open={openOld} />
     </main>
   );
 }
 
-// ------------------------------------------------------------------ shown referral eligibility
-// The website shows: "入金 ≥ 100 USDT" (amount put in, valued when added; a withdrawal deducts in proportion).
-// The contract pays by LP value >= the admin threshold; the admin keeps that threshold low enough (reminder in admin).
-const SHOWN_MIN = (snap: Snapshot) => 100n * 10n ** BigInt(snap.usdtDecimals);
-function shownElig(snap: Snapshot, principal: bigint | null | undefined, contractElig: boolean): boolean {
-  return principal === null || principal === undefined ? contractElig : principal >= SHOWN_MIN(snap);
+// ------------------------------------------------------------------ previous contract (migration)
+/** 旧矿池里还有流动性或没领的奖励时显示：先撤回并领取，再重新添加 */
+function OldPoolCard({ snap, open }: { snap: Snapshot; open: () => void }) {
+  const o = snap.old;
+  if (!o) return null;
+  const pend = o.personalUsd + o.dynamicUsd;
+  if (o.liquidity === 0n && pend === 0n) return null;
+  const tok = usdToToken(pend, snap.rewardPrice, snap.rewardDecimals);
+  return (
+    <section className="card old-pool">
+      <b>旧矿池还有您的资产</b>
+      <p className="fine">请先从旧矿池撤回并领取奖励，再重新添加。</p>
+      <div className="kv">
+        {o.liquidity > 0n && <div><span>旧矿池流动性（参考价值）</span><b>{fmtUnits(o.valueUsd, 18)} USDT</b></div>}
+        {pend > 0n && <div><span>旧矿池待领取（预计）</span><b>{tok !== null ? fmtUnits(tok, snap.rewardDecimals) : "—"} 喜羊羊</b></div>}
+      </div>
+      <button className="btn-gold wide" onClick={open}>从旧矿池撤回并领取</button>
+    </section>
+  );
+}
+
+function OldSheet({ snap, backend, canTx, close, done }: { snap: Snapshot; backend: Backend; canTx: boolean; close: () => void; done: () => void }) {
+  const [o] = useState(snap.old!); // the amounts shown when the sheet was opened
+  const [steps, setSteps] = useState<Step[] | null>(null);
+  const [running, setRunning] = useState(false);
+  const pend = o.personalUsd + o.dynamicUsd;
+  const tok = usdToToken(pend, snap.rewardPrice, snap.rewardDecimals);
+  const go = async () => {
+    const s: Step[] = steps?.some((x) => x.status === "error")
+      ? steps.map((x) => (x.status === "error" ? { ...x, status: "idle" as const, error: undefined } : x))
+      : [
+          { label: "从旧矿池撤回全部流动性", status: "idle" },
+          { label: "领取旧矿池的喜羊羊", status: "idle" },
+        ];
+    setSteps(s);
+    setRunning(true);
+    try {
+      await backend.migrateOld(SLIP_BPS, s, setSteps);
+    } catch (e) {
+      setSteps((p) => (p ? p.map((x) => (x.status === "idle" || x.status === "wallet" ? { ...x, status: "error", error: humanError(e) } : x)) : p));
+    } finally {
+      setRunning(false);
+      done();
+    }
+  };
+  const allDone = !!steps && steps.every((x) => x.status === "done" || x.status === "skipped");
+  return (
+    <Sheet title="从旧矿池撤回并领取" close={close} icon={<span className="ic-c">⊖</span>}>
+      <div className="quote">
+        <div className="qr-row">
+          <span>旧矿池流动性（参考价值）</span>
+          <b>{fmtUnits(o.valueUsd, 18)} USDT</b>
+        </div>
+        <div className="qr-row">
+          <span>旧矿池待领取（预计）</span>
+          <b>{tok !== null ? fmtUnits(tok, snap.rewardDecimals) : "—"} 喜羊羊</b>
+        </div>
+        <p className="fine">撤回后 POP + USDT 及手续费直接回到您的钱包；奖励按领取时的价格换算。之后在新矿池重新添加即可。</p>
+      </div>
+      {steps && <Steps steps={steps} />}
+      {allDone ? (
+        <button className="btn-green wide" onClick={close}>完成</button>
+      ) : (
+        <button className="btn-gold wide" disabled={!canTx || running} onClick={go}>
+          {running ? "处理中…" : steps?.some((x) => x.status === "error") ? "重试" : "确认"}
+        </button>
+      )}
+    </Sheet>
+  );
 }
 
 // ------------------------------------------------------------------ team statistics (referral page + admin lookup)
@@ -370,7 +445,7 @@ function useLive(snap: Snapshot | null, tick: number): Live | null {
     if (!snap?.user) return null;
     const u = snap.user;
     const pr = snap.params;
-    const dailyUsd = (u.valueUsd * BigInt(pr.rateBps) * BigInt(pr.personalBps)) / 100_000_000n;
+    const dailyUsd = (u.principalUsd * BigInt(pr.rateBps) * BigInt(pr.personalBps)) / 100_000_000n; // 按入金额度
     const dt = BigInt(Math.max(0, Math.floor((Date.now() - snap.fetchedAt) / 1000)));
     const personalUsd = u.personalUsd + (snap.running ? (dailyUsd * dt) / 86400n : 0n);
     const p = snap.rewardPrice;
@@ -477,6 +552,7 @@ function MinePage(props: {
         tag="每日 0.5%～1% · 随存随取"
       />
       <StatusLine snap={snap} account={account} />
+      {account && <OldPoolCard snap={snap} open={() => open("old")} />}
 
       {!account ? (
         <div className="card center">
@@ -535,6 +611,10 @@ function MinePage(props: {
                 <i className="usdt-ic">U</i> {fmtUnits(u?.usdtAmt ?? 0n, snap.usdtDecimals)} USDT
               </span>
             </div>
+            <div className="prin-row">
+              <span>入金额度</span>
+              <b>{fmtUnits(u?.principalUsd ?? 0n, 18)} USDT</b>
+            </div>
             <div className="btn-row">
               <button className="btn-green" disabled={!canTx} onClick={() => open("add")}>
                 ⊕ 添加流动性
@@ -575,7 +655,7 @@ function MinePage(props: {
                   直推 {u?.direct ?? 0} · 间推 {u?.indirect ?? 0} · 合计 {(u?.direct ?? 0) + (u?.indirect ?? 0)}
                 </div>
               </div>
-              <span className={"pill " + (u && u.liquidity > 0n && shownElig(snap, u.principal, u.eligible) ? "ok" : "no")}>{u && u.liquidity > 0n && shownElig(snap, u.principal, u.eligible) ? "动态资格有效" : !u || u.liquidity === 0n ? "动态资格未生效" : "未达100 USDT门槛"}</span>
+              <span className={"pill " + (u?.eligible ? "ok" : "no")}>{u?.eligible ? "动态资格有效" : !u || u.liquidity === 0n ? "动态资格未生效" : `未达${usd0(snap.params.thresholdUsd)} USDT门槛`}</span>
             </div>
           </section>
         </>
@@ -620,6 +700,7 @@ function ReferPage({ cfg, snap, live, account, backend, onConnect, toast }: { cf
   useEffect(() => {
     load();
   }, [load]);
+  const team = useTeam(backend, account);
 
   if (!account)
     return (
@@ -632,22 +713,13 @@ function ReferPage({ cfg, snap, live, account, backend, onConnect, toast }: { cf
   const u = snap.user;
   const base = cfg.appUrl || location.origin + location.pathname;
   const link = `${base}?ref=${account}`;
-  const min100 = SHOWN_MIN(snap);
-  const meElig = !!u && u.liquidity > 0n && shownElig(snap, u.principal, u.eligible);
-  const gap = u ? min100 - (u.principal ?? (u.valueUsd * min100) / (100n * E18)) : min100;
-  const [dp, setDp] = useState<Record<string, bigint> | null>(null); // downlines' amount put in
-  useEffect(() => {
-    if (!list) return;
-    const all = [...list.direct, ...list.indirect].map((d) => d.address);
-    let off = false;
-    backend.principals(all).then((x) => !off && setDp(x), () => {});
-    return () => {
-      off = true;
-    };
-  }, [list, backend]);
-  const dElig = (d: Downline) => d.valueUsd > 0n && shownElig(snap, dp ? dp[d.address.toLowerCase()] ?? null : null, d.eligible);
+  // 动态资格以合约为准：入金额度 ≥ 门槛
+  const thr = snap.params.thresholdUsd;
+  const T = usd0(thr);
+  const meElig = !!u && u.eligible;
+  const gap = u ? thr - u.principalUsd : thr;
+  const dElig = (d: Downline) => d.eligible;
   const effective = list ? [...list.direct, ...list.indirect].filter(dElig).length : null;
-  const team = useTeam(backend, account);
   const rows = list ? (tab === "direct" ? list.direct : list.indirect) : [];
   return (
     <>
@@ -657,12 +729,12 @@ function ReferPage({ cfg, snap, live, account, backend, onConnect, toast }: { cf
           <b>{meElig ? "动态资格已生效" : "动态资格未生效"}</b>
           <div>
             {meElig
-              ? "入金 ≥ 100 USDT 即可享受动态资格"
+              ? `入金 ≥ ${T} USDT 即可享受动态资格`
               : !u || u.liquidity === 0n
                 ? u?.joined
-                  ? "已撤回流动性，重新添加 ≥ 100 USDT 即可恢复"
-                  : "添加 ≥ 100 USDT 流动性即可享受动态资格"
-                : `距 100 USDT 还差 ${fmtUnits(gap > 0n ? gap : 0n, snap.usdtDecimals)} USDT`}
+                  ? `已撤回流动性，重新添加 ≥ ${T} USDT 即可恢复`
+                  : `添加 ≥ ${T} USDT 流动性即可享受动态资格`
+                : `距 ${T} USDT 还差 ${fmtUnits(gap > 0n ? gap : 0n, 18)} USDT`}
           </div>
         </div>
       </section>
@@ -707,7 +779,7 @@ function ReferPage({ cfg, snap, live, account, backend, onConnect, toast }: { cf
           <b>{effective ?? "—"}</b>
         </div>
       </section>
-      <p className="fine pad">人数只算添加过流动性的钱包，重复添加不重复计数；团队总人数包括你下面所有层级，不含你自己。有效 = 入金 ≥ 100 USDT。</p>
+      <p className="fine pad">人数只算添加过流动性的钱包，重复添加不重复计数；团队总人数包括你下面所有层级，不含你自己。有效 = 入金 ≥ {T} USDT。</p>
       <TeamCard snap={snap} team={team} />
 
       <section className="card reward dyn">
@@ -764,7 +836,7 @@ function ReferPage({ cfg, snap, live, account, backend, onConnect, toast }: { cf
       <section className="card rules-mini">
         <b>顺延规则</b>
         <p className="fine">
-          沿推荐链向上，第一个满足资格（入金 ≥ 100 USDT）的上级获得 {pct(snap.params.tier1Bps)}，第二个获得 {pct(snap.params.tier2Bps)}；同一人不会同时占两个档位；找不到时该部分不分配，也不扣运营钱包。顺延不改变真实推荐关系和人数统计。向上最多查找 10 层。
+          沿推荐链向上，第一个满足资格（入金 ≥ {T} USDT）的上级获得 {pct(snap.params.tier1Bps)}，第二个获得 {pct(snap.params.tier2Bps)}；同一人不会同时占两个档位；找不到时该部分不分配，也不扣运营钱包。顺延不改变真实推荐关系和人数统计。向上最多查找 10 层。
         </p>
       </section>
     </>
@@ -1150,7 +1222,7 @@ function ExitSheet({ snap, backend, account, canTx, close, done }: { snap: Snaps
   useEffect(() => {
     setQ(null);
     backend
-      .quoteExit(account, pct, SLIP_BPS, u.liquidity, u.valueUsd, snap.params.thresholdUsd)
+      .quoteExit(account, pct, SLIP_BPS, u.liquidity, u.valueUsd, u.principalUsd, snap.params.thresholdUsd)
       .then(setQ)
       .catch((e) => setErr("报价失败：" + humanError(e)));
   }, [pct]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -1203,11 +1275,7 @@ function ExitSheet({ snap, backend, account, canTx, close, done }: { snap: Snaps
         </div>
         <div className="qr-row">
           <span>动态资格</span>
-          {(() => {
-            const nowE = shownElig(snap, u.principal, u.eligible);
-            const after = u.principal === null || u.principal === undefined ? q?.eligibleAfter : pct < 10000 && (u.principal * BigInt(10000 - pct)) / 10000n >= SHOWN_MIN(snap);
-            return <b className={after ? "ok-t" : "err"}>{q ? (after ? "保持有效" : nowE ? "将失效" : "未达门槛") : "…"}</b>;
-          })()}
+          <b className={q?.eligibleAfter ? "ok-t" : "err"}>{q ? (q.eligibleAfter ? "保持有效" : u.eligible ? "将失效" : "未达门槛") : "…"}</b>
         </div>
       </div>
       <p className="fine">✓ 已累计的个人和动态奖励保留，可另行领取；退出不会强制领取喜羊羊。断开钱包不等于退出。</p>
@@ -1287,12 +1355,12 @@ function RulesSheet({ snap, close }: { snap: Snapshot | null; close: () => void 
   return (
     <Sheet title="奖励规则" close={close}>
       <div className="rules">
-        <p><b>奖励基数：</b>您存入流动性本金的当前 USDT 参考价值（按池子时间加权价格），不含待领取奖励和未领取手续费。</p>
+        <p><b>奖励基数：</b>您的入金额度：添加流动性时按 POP/USDT {snap?.twapMinutes ?? 15} 分钟平均价折算成 USDT 记下，之后币价涨跌不影响；再次添加会累加，撤回时按撤回比例扣减，全部撤回为 0。</p>
         <p><b>每日总额度：</b>奖励基数的 {pct(pr.rateBps)}，按实际持有时间累计，不自动复利。其中本人 {pct(pr.personalBps)}，第一个有效上级 {pct(pr.tier1Bps)}，第二个有效上级 {pct(pr.tier2Bps)}（包含在每日总额度之内）。管理员调整参数只影响调整之后，已累计的收益不变。</p>
-        <p><b>计价与领取：</b>奖励按 USDT 计价记账，领取时按喜羊羊「30 分钟平均价」和「现价」中较高的那个换算，由您手动领取并支付 BNB 网络费。页面数字每 3 秒更新一次预计值，不代表链上交易。</p>
-        <p><b>估值更新：</b>系统每分钟自动检查，约每 25 分钟更新一次估值（需要暂停或恢复时立即更新）；两次检查之间按上一次估值计息；超过 2 小时没有有效估值会自动停止计息，恢复后不补计。</p>
-        <p><b>暂停：</b>运营钱包储备/授权不足、报价失效或管理员暂停时，停止新增入金和新增计息；已累计奖励保留；随时可以退出本金。</p>
-        <p><b>动态资格：</b>入金 ≥ 100 USDT（按添加时的价格计算，撤回时按比例扣减）。资格在下级每次结算时判定（下级操作或系统定期结算）；您自己退出导致失效时，从退出那一刻起停止获得动态奖励；恢复后不追溯。</p>
+        <p><b>计价与领取：</b>奖励按 USDT 计价记账，领取时按喜羊羊「{snap?.twapMinutes ?? 15} 分钟平均价」和「现价」中较高的那个换算，由您手动领取并支付 BNB 网络费。页面数字每 3 秒更新一次预计值，不代表链上交易。</p>
+        <p><b>自动检查：</b>系统每分钟自动检查，约每 25 分钟记录一次收益（需要暂停或恢复时立即更新）；超过 2 小时没有检查会自动停止计息，恢复后不补计。</p>
+        <p><b>暂停：</b>运营钱包储备/授权不足、喜羊羊报价失效或管理员暂停时，停止新增入金和新增计息；已累计奖励保留；随时可以退出本金。</p>
+        <p><b>动态资格：</b>入金额度 ≥ {usd0(pr.thresholdUsd)} USDT（按添加时的价格计算，撤回时按比例扣减）。资格在下级每次结算时判定（下级操作或系统定期结算）；您自己退出导致失效时，从退出那一刻起停止获得动态奖励；恢复后不追溯。</p>
         <p><b>退出：</b>固定返还 POP + USDT 及该仓位手续费，不保证等于原入金金额。</p>
         <p><b>风险：</b>奖励来自运营钱包持有的喜羊羊，不是增发，也不保证一直足额兑付；价格波动会影响到手数量与本金价值。</p>
       </div>
@@ -1308,7 +1376,7 @@ type KeeperStatus = {
   ran: boolean; at: number | null; ok: boolean; accruing: boolean | null; keeper: string | null; balance: string | null;
   lowBalance: boolean | null; daysLeft: number | null; users: number; toSettle: number; settleHours: number | null;
   lastSettle: number | null; lastCheckpoint: number | null; errors: string[];
-  eligMismatch?: number | null; eligMinValue?: string | null; eligThreshold?: string | null;
+  legacy?: { miner: string; done: boolean; started: boolean; left: number } | null; // final referral settlement of the previous contract
 };
 function useKeeperJson(): KeeperStatus | null {
   const [k, setK] = useState<KeeperStatus | null>(null);
@@ -1327,19 +1395,6 @@ function useKeeperJson(): KeeperStatus | null {
     };
   }, []);
   return k;
-}
-/** admin: wallets shown as eligible (put in >= 100 USDT) whose LP value is below the contract threshold right now */
-function EligReminder() {
-  const k = useKeeperJson();
-  if (!k || k.eligMismatch === null || k.eligMismatch === undefined) return null;
-  const usd = (x: string | null | undefined) => (x ? fmtUnits(BigInt(x), 18, 2) : "—");
-  return k.eligMismatch > 0 ? (
-    <p className="fine warn-note">
-      提醒：有 {k.eligMismatch} 个钱包页面显示动态资格有效（入金 ≥ 100 USDT），但仓位价值已低于当前门槛 {usd(k.eligThreshold)} USDT，合约暂时不给他们发推荐奖励。把门槛调到 {usd(k.eligMinValue)} USDT 以下，就能全部覆盖。
-    </p>
-  ) : (
-    <p className="fine">页面显示有效的钱包，合约都在正常发推荐奖励。其中仓位价值最低的是 {usd(k.eligMinValue)} USDT，门槛不要高于这个数。</p>
-  );
 }
 function KeeperCard({ cfg }: { cfg: AppConfig }) {
   const [k, setK] = useState<KeeperStatus | null>(null);
@@ -1422,7 +1477,7 @@ function AdminPage({ cfg, snap, backend, demo, isAdmin, refresh }: { cfg: AppCon
   const p = snap.rewardPrice;
   const needTokens = r && p ? usdToToken(r.liabilityUsd, p, snap.rewardDecimals) : null;
   const usableUsd = r && p ? (r.usable * p) / 10n ** BigInt(snap.rewardDecimals) : null;
-  const daily = snap.tvlUsd ? (snap.tvlUsd * BigInt(pr.rateBps)) / 10000n : null;
+  const daily = snap.totalPrincipalUsd !== null ? (snap.totalPrincipalUsd * BigInt(pr.rateBps)) / 10000n : null; // 按全部入金额度
   // the contract's own rule: usable reserve >= unpaid + runwayDays x max(daily emission, emission of 100 USDT)
   const minDaily = (100n * E18 * BigInt(pr.rateBps)) / 10000n;
   const effDaily = daily !== null && daily > minDaily ? daily : minDaily;
@@ -1478,6 +1533,7 @@ function AdminPage({ cfg, snap, backend, demo, isAdmin, refresh }: { cfg: AppCon
           </div>
         )}
         <div><span>平台LP参考价值</span><b>{fmtUnits(snap.tvlUsd, 18)} USDT</b></div>
+        <div><span>全部入金额度</span><b>{fmtUnits(snap.totalPrincipalUsd, 18)} USDT</b></div>
         <div><span>每日总发放（当前）</span><b>{fmtUnits(daily, 18)} USDT 计价</b></div>
         <div><span>参与钱包数</span><b>{snap.participants}</b></div>
         <div><span>累计实际发放</span><b>{fmtUnits(snap.totalPaidReward, snap.rewardDecimals)} 喜羊羊</b></div>
@@ -1490,6 +1546,7 @@ function AdminPage({ cfg, snap, backend, demo, isAdmin, refresh }: { cfg: AppCon
       <StatusLine snap={snap} force />
 
       <KeeperCard cfg={cfg} />
+      {snap.oldStatus && <OldAdminCard cfg={cfg} snap={snap} old={snap.oldStatus} backend={backend} can={can} refresh={refresh} />}
 
       <section className="card btn-col">
         <b>运行控制</b>
@@ -1522,12 +1579,11 @@ function AdminPage({ cfg, snap, backend, demo, isAdmin, refresh }: { cfg: AppCon
         <p className="fine">立即生效，只影响之后的收益；之前的收益按旧参数结算，不会改变。</p>
         <div className="grid-in">
           <label className="inp"><span>每日收益率（%）</span><div className="inp-row"><input inputMode="decimal" value={rate} onChange={(e) => setRate(e.target.value)} /></div></label>
-          <label className="inp"><span>动态资格门槛（USDT，只在后台用）</span><div className="inp-row"><input inputMode="decimal" value={thr} onChange={(e) => setThr(e.target.value)} /></div></label>
+          <label className="inp"><span>动态资格门槛（入金额度，USDT）</span><div className="inp-row"><input inputMode="decimal" value={thr} onChange={(e) => setThr(e.target.value)} /></div></label>
           <label className="inp"><span>本人（%）</span><div className="inp-row"><input inputMode="decimal" value={pP} onChange={(e) => setPP(e.target.value)} /></div></label>
           <label className="inp"><span>一代上级（%）</span><div className="inp-row"><input inputMode="decimal" value={p1} onChange={(e) => setP1(e.target.value)} /></div></label>
           <label className="inp"><span>二代上级（%）</span><div className="inp-row"><input inputMode="decimal" value={p2} onChange={(e) => setP2(e.target.value)} /></div></label>
         </div>
-        <EligReminder />
         <p className="fine">三项比例是每日总额度的分配，加起来必须等于 100%（例：85 / 10 / 5）。当前：{pct(pr.rateBps)}/天，{pct(pr.personalBps)} / {pct(pr.tier1Bps)} / {pct(pr.tier2Bps)}，门槛 {usd0(pr.thresholdUsd)} USDT。</p>
         {rewardErr && <div className="alert">{rewardErr}</div>}
         <button className="btn-green wide" disabled={!can || !!rewardErr} onClick={() => act("rewardParams", `保存奖励参数：${rate}%/天，${pP}/${p1}/${p2}，门槛 ${thr} USDT`, { rateBps: rb, personalBps: pb, tier1Bps: b1, tier2Bps: b2, thresholdUsd: thrUsd })}>
@@ -1579,6 +1635,88 @@ function AdminPage({ cfg, snap, backend, demo, isAdmin, refresh }: { cfg: AppCon
         ))}
       </section>
     </>
+  );
+}
+
+/** previous contract: pause it, see who still has something there, revoke its approval, end it */
+function OldAdminCard({ cfg, snap, old, backend, can, refresh }: { cfg: AppConfig; snap: Snapshot; old: OldStatus; backend: Backend; can: boolean; refresh: () => void }) {
+  const k = useKeeperJson();
+  const [steps, setSteps] = useState<Step[] | null>(null);
+  const [left, setLeft] = useState<{ wallets: number; withLiquidity: number; unclaimed: number; unclaimedUsd: bigint } | null>(null);
+  const [prog, setProg] = useState<number | null>(null);
+  const [err, setErr] = useState("");
+  const [revokeText, setRevokeText] = useState("");
+  const [endText, setEndText] = useState("");
+  const d = snap.rewardDecimals;
+  const act = async (a: string, label: string) => {
+    const st: Step[] = [{ label, status: "idle" }];
+    setSteps(st);
+    try {
+      if (await backend.admin(a as any, 0n, st, setSteps)) refresh();
+    } catch (e) {
+      setSteps([{ ...st[0], status: "error", error: humanError(e) }]);
+    }
+  };
+  const check = async () => {
+    setErr("");
+    setLeft(null);
+    setProg(0);
+    try {
+      setLeft(await backend.oldLeftovers((x, t) => setProg(Math.floor((x / t) * 100))));
+    } catch (e) {
+      setErr("读取失败：" + humanError(e));
+    } finally {
+      setProg(null);
+    }
+  };
+  const lg = k?.legacy && k.legacy.miner.toLowerCase() === old.address.toLowerCase() ? k.legacy : null;
+  const settleText = !lg ? "—" : lg.done ? "已完成" : lg.started ? `进行中（还剩 ${lg.left} 个钱包）` : "旧合约暂停后自动进行";
+  return (
+    <section className="card btn-col">
+      <b>旧合约（迁移用）</b>
+      <div className="kv">
+        <div><span>合约地址</span><b className="mono">{short(old.address)} <a href={`${cfg.explorer}/address/${old.address}`} target="_blank" rel="noreferrer">↗</a></b></div>
+        <div><span>状态</span><b className={old.ended || old.adminPaused ? "" : "err"}>{old.ended ? "已永久结束" : old.adminPaused ? "已暂停（用户只能撤回和领取）" : old.accruing ? "仍在计息" : "已停止计息"}</b></div>
+        <div><span>旧矿池剩余流动性</span><b>{fmtUnits(old.tvlUsd, 18)} USDT</b></div>
+        <div><span>运营钱包给旧合约的剩余授权</span><b>{fmtUnits(old.reserve.allowance, d)} 喜羊羊</b></div>
+        <div><span>旧合约推荐奖励最终结算</span><b>{settleText}</b></div>
+      </div>
+      <button className="btn-line wide" disabled={prog !== null} onClick={check}>{prog !== null ? `正在检查… ${prog}%` : "检查还有多少人没撤回、没领取"}</button>
+      {err && <div className="alert">{err}</div>}
+      {left && (
+        <p className={"fine" + (left.withLiquidity || left.unclaimed ? " warn-note" : "")}>
+          旧合约共 {left.wallets} 个钱包：还有 {left.withLiquidity} 个没撤回，{left.unclaimed} 个还有奖励没领（约 {fmtUnits(left.unclaimedUsd, 18)} USDT 计价）。
+          {left.withLiquidity || left.unclaimed ? "" : "全部处理完了，可以撤销授权。"}
+        </p>
+      )}
+      {!old.adminPaused && !old.ended && (
+        <>
+          <button className="btn-line wide danger" disabled={!can} onClick={() => act("oldPause", "暂停旧合约")}>暂停旧合约</button>
+          <p className="fine">暂停后旧合约不再计息、不能再入金；用户随时可以撤回和领取已累计的奖励。</p>
+        </>
+      )}
+      {old.reserve.allowance > 0n && (
+        <div className="danger-box">
+          <b>撤销旧合约的喜羊羊授权</b>
+          <p className="fine">撤销后旧合约就不能再从运营钱包发奖励，旧合约里还没领的奖励也就领不了了。请先点上面的“检查”，确认大家都领完了再撤销。请输入「确认撤销」后才能点击。</p>
+          <div className="inp-row">
+            <input placeholder="确认撤销" value={revokeText} onChange={(e) => setRevokeText(e.target.value)} />
+          </div>
+          <button className="btn-line wide danger" disabled={!can || revokeText.trim() !== "确认撤销"} onClick={() => act("oldRevoke", "撤销旧合约的喜羊羊授权")}>撤销旧合约授权</button>
+        </div>
+      )}
+      {!old.ended && (
+        <div className="danger-box">
+          <b>永久结束旧合约</b>
+          <p className="fine">结束后不能恢复。用户仍可撤回和领取（只要授权还在）。请输入「确认结束」后才能点击。</p>
+          <div className="inp-row">
+            <input placeholder="确认结束" value={endText} onChange={(e) => setEndText(e.target.value)} />
+          </div>
+          <button className="btn-line wide danger" disabled={!can || endText.trim() !== "确认结束"} onClick={() => act("oldEnd", "永久结束旧合约")}>永久结束旧合约</button>
+        </div>
+      )}
+      {steps && <Steps steps={steps} />}
+    </section>
   );
 }
 

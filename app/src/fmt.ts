@@ -45,3 +45,8 @@ export function usdToToken(usd: bigint, priceUsd18: bigint | null, tokenDecimals
 export function applySlippage(x: bigint, bps: number): bigint {
   return (x * BigInt(10000 - bps)) / 10000n;
 }
+
+/** the contract's own rule for referral eligibility: 入金额度 >= threshold, with 0.5% tolerance for rounding */
+export function meetsThreshold(principalUsd: bigint, thresholdUsd: bigint): boolean {
+  return principalUsd > 0n && principalUsd * 10000n >= thresholdUsd * 9950n;
+}

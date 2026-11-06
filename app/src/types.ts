@@ -9,8 +9,8 @@ export interface UserView {
   claimedDynamic: bigint;
   referrer: string;
   joined: boolean;
-  eligible: boolean; // the contract's own judgement (LP value >= admin threshold)
-  principal?: bigint | null; // amount put in (USDT raw, withdrawals deducted in proportion); null = not available
+  eligible: boolean; // the contract's own judgement (入金额度 >= threshold)
+  principalUsd: bigint; // 入金额度 (18-dec USD): booked when added, reduced in proportion on withdrawal
   direct: number;
   indirect: number;
   firstDepositAt: number;
@@ -53,10 +53,12 @@ export interface Snapshot {
   lastCheckpoint: number;
   rewardPrice: bigint | null; // USD18 per whole reward token (TWAP), null = unavailable
   rewardPriceEstimated?: boolean; // true: the contract's average price is briefly unavailable, this is a live market estimate
+  twapMinutes: number; // the contract's average-price time (minutes)
   rewardDecimals: number;
   usdtDecimals: number;
   popDecimals: number;
   tvlUsd: bigint | null;
+  totalPrincipalUsd: bigint | null; // sum of everyone's 入金额度 (18-dec USD): the daily emission is based on it
   participants: number;
   totalPaidReward: bigint;
   owner: string;
@@ -64,9 +66,35 @@ export interface Snapshot {
   runwayDays: number;
   reserve: { balance: bigint; allowance: bigint; usable: bigint; liabilityUsd: bigint } | null;
   user: UserView | null;
+  old: OldUserView | null; // this wallet in the previous contract (null = no previous contract configured)
+  oldStatus: OldStatus | null; // previous contract, for the admin page (owner / operator wallets only)
   balances: { usdt: bigint; pop: bigint; reward: bigint } | null;
   addresses: { miner: string; pool: string; pop: string; usdt: string; reward: string; rewardPool: string; npm?: string };
   fetchedAt: number;
+}
+
+/** a wallet in the previous contract: what it still has to withdraw / claim there, and its old referral binding */
+export interface OldUserView {
+  liquidity: bigint;
+  valueUsd: bigint;
+  personalUsd: bigint;
+  dynamicUsd: bigint;
+  referrer: string; // "" = none
+  joined: boolean;
+  refJoined: boolean | null; // has the old referrer already added liquidity in the new contract (null = not checked)
+}
+
+export interface OldStatus {
+  address: string;
+  adminPaused: boolean;
+  ended: boolean;
+  accruing: boolean;
+  claimPaused: boolean;
+  totalLiquidity: bigint;
+  tvlUsd: bigint | null;
+  participants: number;
+  reserve: { balance: bigint; allowance: bigint; usable: bigint; liabilityUsd: bigint };
+  rewardPrice: bigint | null;
 }
 
 export type RecKind = "liquidity" | "claim" | "dynamic";
@@ -100,7 +128,6 @@ export interface Downline {
   firstDepositAt: number;
   valueUsd: bigint;
   eligible: boolean;
-  principal?: bigint | null;
 }
 
 export type StepStatus = "idle" | "wallet" | "pending" | "done" | "error" | "skipped";
@@ -142,7 +169,7 @@ export interface ExitQuote {
 export const REASON_TEXT: [number, string][] = [
   [1, "管理员已暂停新增入金和计息"],
   [2, "流动性估值不可用（价格历史不足、偏离过大或流动性不足）"],
-  [4, "喜羊羊报价暂不可用（刚部署需积累约 30 分钟价格历史，或自动检查服务停止超过 2 小时）"],
+  [4, "喜羊羊报价暂不可用（刚部署需要先积累价格历史，或自动检查服务停止运行超过 1 小时）"],
   [8, "运营钱包储备或授权不足"],
   [16, "挖矿已永久结束（已累计奖励仍可领取，本金随时可退出）"],
 ];

@@ -13,7 +13,11 @@
 //
 // Required:   KV binding STATE. The keeper wallet is created by the Worker itself on its first run and kept in KV
 //             (or set a secret KEEPER_KEY to use your own). Fund the shown address with a little BNB.
-// Optional:   KEEPER_KEY, RPC_URL, RPC_URL_2, MINER, DEPLOY_BLOCK, CHECK_MINUTES, SETTLE_HOURS, MAX_GAS_GWEI.
+// Optional:   KEEPER_KEY, RPC_URL, RPC_URL_2, MINER, DEPLOY_BLOCK, OLD_MINER, CHECK_MINUTES, SETTLE_HOURS, MAX_GAS_GWEI.
+//
+// Switching to a new mining contract (MINER changes): when the previous MINER equals OLD_MINER, its wallet list is
+// kept; once the old contract has been paused by its admin (no more accrual), the keeper settles referral rewards of
+// all those wallets there one last time, so uplines can claim everything the old contract owes them.
 //
 // Crypto: noble-secp256k1 + noble-hashes (MIT, audited, vendored unchanged).
 
@@ -27,8 +31,9 @@ secp.hashes.sha256 = sha256;
 
 
 const DEFAULTS = {
-  MINER: "0x363CBA25a4bC4617fAF017b1e0728f4AB7473E17",
-  DEPLOY_BLOCK: 131739316,
+  MINER: "0x45bdFd13950C8f5C9c587A83A9E90eA9dEEb069e",
+  DEPLOY_BLOCK: 132001193,
+  OLD_MINER: "0x363CBA25a4bC4617fAF017b1e0728f4AB7473E17", // previous mining contract (final referral settlement after it is paused)
   CHAIN_ID: 56,
   RPC_URL: "https://bsc-rpc.publicnode.com",
   RPC_URL_2: "https://bsc-dataseed.bnbchain.org",
@@ -60,7 +65,7 @@ const KEY_SLOT = "keeper-key"; // KV entry holding the self-created keeper walle
 const REASONS = [
   [1, "管理员已暂停"],
   [2, "流动性估值暂不可用（价格历史不足、偏离过大或流动性不足）"],
-  [4, "喜羊羊价格暂不可用（需要约 30 分钟价格历史）"],
+  [4, "喜羊羊价格暂不可用（刚部署需要先积累价格历史，或检查中断超过 1 小时）"],
   [8, "运营钱包的喜羊羊余额或授权额度不足"],
   [16, "挖矿已永久结束"],
 ];
@@ -120,12 +125,8 @@ const SEL = {
   pool: selector("POOL()"),
   slot0: selector("slot0()"),
   growObs: selector("increaseObservationCardinalityNext(uint16)"),
-  vpr: selector("valuePerRef()"),
-  threshold: selector("dynamicThresholdUsd()"),
+  adminPaused: selector("adminPaused()"),
 };
-// Shown referral eligibility on the website: "入金额度" (amount put in, valued in USDT when added; a withdrawal
-// reduces it in proportion) >= 100 USDT. The contract itself pays referral rewards by LP value >= the admin threshold.
-const SHOWN_MIN_PRINCIPAL = 100n * 10n ** 18n; // BSC USDT has 18 decimals
 // The contract reads a 30-minute average price from the POP/USDT pool. The pool keeps at most one price record per
 // second in a ring of "observation" slots; with only a few hundred slots a busy pool overwrites the 30-minute-old
 // record and the average becomes unavailable (the contract then pauses). Anyone may add slots to a pool, so the
@@ -258,6 +259,7 @@ function config(env) {
   return {
     miner: str("MINER").toLowerCase(),
     deployBlock: num("DEPLOY_BLOCK"),
+    oldMiner: (str("OLD_MINER") || "").toLowerCase(),
     chainId: num("CHAIN_ID"),
     rpcs,
     logRpcs: env.LOG_RPC_URLS ? String(env.LOG_RPC_URLS).split(",").map((x) => x.trim()).filter(Boolean) : [...new Set([...LOG_RPCS, ...rpcs])],
@@ -279,7 +281,7 @@ function freshState(c) {
     miner: c.miner,
     scanned: c.deployBlock - 1,
     chunk: c.logChunk,
-    // address -> [liquidity, hasReferrer (0/1), referrer, usdtOnlyIn, bothUsdtIn, bothPopIn, bothValueUsdt, principal]
+    // address -> [liquidity, hasReferrer (0/1), referrer, usdtOnlyIn, bothUsdtIn, bothPopIn, bothValueUsdt]
     // (amounts as decimal strings in raw token units; *In = put in by deposits, net of refunds)
     users: {},
     settleCursor: 0,
@@ -301,7 +303,16 @@ async function loadState(env, c) {
   try {
     let s = await env.STATE.get("state", "json");
     if (memState && memState.miner === c.miner && (!s || (memState.seq || 0) >= (s.seq || 0))) s = JSON.parse(JSON.stringify(memState));
-    if (!s || s.miner !== c.miner || ![1, 2, 3].includes(s.v)) return { ok: true, s: freshState(c) };
+    if (s && s.miner !== c.miner) {
+      // a new mining contract: start over, but keep the keeper wallet and (for OLD_MINER) the old wallet list
+      const f = freshState(c);
+      for (const k of ["generatedAddr", "generatedAt", "keeperAddr", "balHist", "logsUrl"]) if (s[k] !== undefined) f[k] = s[k];
+      if (c.oldMiner && s.miner === c.oldMiner) {
+        f.legacy = { miner: s.miner, list: s.users ? settleList(s) : [], cursor: 0, started: false, done: false };
+      } else if (s.legacy && s.legacy.miner === c.oldMiner) f.legacy = s.legacy;
+      return { ok: true, s: f };
+    }
+    if (!s || ![1, 2, 3].includes(s.v)) return { ok: true, s: freshState(c) };
     if (s.v !== 3) {
       // team statistics / shown eligibility need the referrer and every deposit and withdrawal of every wallet:
       // read all events again from the start. The old wallet list keeps the referral settlement going meanwhile.
@@ -318,7 +329,7 @@ async function loadState(env, c) {
   }
 }
 
-const ZERO_ENTRY = () => ["0", 0, "", "0", "0", "0", "0", "0"];
+const ZERO_ENTRY = () => ["0", 0, "", "0", "0", "0", "0"];
 const add = (e, i, v) => (e[i] = (BigInt(e[i] || "0") + v).toString());
 
 function applyLog(users, l) {
@@ -327,7 +338,7 @@ function applyLog(users, l) {
   if (t0 !== T_JOINED && t0 !== T_DEPOSITED && t0 !== T_WITHDRAWN) return;
   const u = "0x" + l.topics[1].slice(26).toLowerCase();
   const e = users[u] || (users[u] = ZERO_ENTRY());
-  while (e.length < 8) e.push(e.length === 2 ? "" : "0");
+  while (e.length < 7) e.push(e.length === 2 ? "" : "0");
   if (t0 === T_JOINED) {
     const r = big(l.topics[2]);
     e[1] = r !== 0n ? 1 : 0;
@@ -336,28 +347,20 @@ function applyLog(users, l) {
   }
   const w = (i) => BigInt("0x" + (l.data.slice(2 + 64 * i, 2 + 64 * (i + 1)) || "0"));
   const liq = w(0);
-  const before = BigInt(e[0]);
-  let v = before + (t0 === T_DEPOSITED ? liq : -liq);
+  let v = BigInt(e[0]) + (t0 === T_DEPOSITED ? liq : -liq);
   if (v < 0n) v = 0n;
   e[0] = v.toString();
-  if (t0 === T_WITHDRAWN) {
-    // the amount put in shrinks in proportion to the liquidity taken out (all out -> 0)
-    const pr = BigInt(e[7] || "0");
-    e[7] = (v === 0n || before === 0n ? 0n : pr - (pr * (liq < before ? liq : before)) / before).toString();
-    return;
-  }
+  if (t0 === T_WITHDRAWN) return;
   // Deposited data: liquidity, usdtIn, popIn, usdtSwapped, popFromSwap, usdtRefund, popRefund
   const usdtIn = w(1), popIn = w(2), swapped = w(3), usdtRefund = w(5), popRefund = w(6);
   const pos = (x) => (x > 0n ? x : 0n);
   if (popIn === 0n) {
     add(e, 3, pos(usdtIn - usdtRefund)); // USDT only
-    add(e, 7, pos(usdtIn - usdtRefund));
   } else {
     add(e, 4, pos(usdtIn - usdtRefund)); // USDT + POP
     add(e, 5, pos(popIn - popRefund));
     // full range: the POP side is worth the same as the USDT that went into the position
     add(e, 6, pos(2n * (usdtIn - swapped - usdtRefund)));
-    add(e, 7, pos(2n * (usdtIn - swapped - usdtRefund)));
   }
 }
 
@@ -500,7 +503,7 @@ export async function runOnce(env) {
       savedAt: 0,
       seq: 0,
       load: Math.round((x.load || 1) * 4),
-      status: { ok: t.ok, errors: t.errors, actions: t.actions, accruing: t.accruing, reasons: t.reasons, keeper: t.keeper, users: t.users, toSettle: t.toSettle, eligMismatch: t.eligMismatch },
+      status: { ok: t.ok, errors: t.errors, actions: t.actions, accruing: t.accruing, reasons: t.reasons, keeper: t.keeper, users: t.users, toSettle: t.toSettle },
     });
   };
   const fp0 = loaded.ok ? fingerprint(s) : null;
@@ -527,6 +530,7 @@ export async function runOnce(env) {
     s.keeperAddr = me;
 
     // ---- 1. one batched read
+    const legacyOpen = loaded.ok && !!s.legacy && !s.legacy.done && /^0x[0-9a-f]{40}$/.test(s.legacy.miner || "");
     const ethCall = (data, from) => ["eth_call", [from ? { from, to: c.miner, data } : { to: c.miner, data }, "latest"]];
     const r = await rpc.batch([
       ["eth_chainId", []],
@@ -542,9 +546,8 @@ export async function runOnce(env) {
       ethCall("0x" + SEL.operator),
       ethCall("0x" + SEL.owner),
       ethCall("0x" + SEL.pool),
-      ethCall("0x" + SEL.vpr),
-      ethCall("0x" + SEL.threshold),
-      ...(s.pool ? [["eth_call", [{ to: s.pool, data: "0x" + SEL.slot0 }, "latest"]]] : []),
+      ["eth_call", [{ to: s.pool || c.miner, data: "0x" + (s.pool ? SEL.slot0 : SEL.pool) }, "latest"]], // 13: pool slot0 (once the pool is known)
+      ...(legacyOpen ? [["eth_call", [{ to: s.legacy.miner, data: "0x" + SEL.accruing }, "latest"]], ["eth_call", [{ to: s.legacy.miner, data: "0x" + SEL.adminPaused }, "latest"]]] : []), // 14, 15
     ]);
     const need = (i, what) => {
       if (r[i].error) throw new Error(`读取${what}失败：${r[i].error.message}`);
@@ -665,31 +668,10 @@ export async function runOnce(env) {
     }
     st.gasPrice = gasPrice.toString();
 
-    // ---- 2a. admin reminder: wallets the website shows as eligible (put in >= 100 USDT) whose LP value is now
-    // below the contract threshold, so the contract does not pay them referral rewards
-    if (!s.rebuilding && !r[13].error && !r[14].error) {
-      const vpr = Number(big(r[13].result)) / 1e27; // USD (18 dec) per unit of liquidity
-      const thr = Number(big(r[14].result));
-      const minP = Number(SHOWN_MIN_PRINCIPAL);
-      let n = 0;
-      let minV = Infinity;
-      for (const a in s.users) {
-        const e = s.users[a];
-        const liq = +e[0];
-        if (liq <= 0 || +(e[7] || 0) < minP) continue;
-        const val = liq * vpr;
-        if (val < minV) minV = val;
-        if (val < thr) n++;
-      }
-      st.eligMismatch = n;
-      st.eligMinValue = Number.isFinite(minV) ? intStr(minV) : null;
-      st.eligThreshold = intStr(thr);
-    }
-
     // ---- 2b. enough price-history slots in the POP/USDT pool (one-time, then just a cheap read each run)
     if (!r[12].error && r[12].result && r[12].result.length >= 42) s.pool = "0x" + String(r[12].result).slice(-40).toLowerCase();
-    if (s.pool && r[15] && !r[15].error && r[15].result && r[15].result.length >= 2 + 64 * 5) {
-      const slotsNext = Number(BigInt("0x" + r[15].result.slice(2 + 64 * 4, 2 + 64 * 5)));
+    if (s.pool && r[13] && !r[13].error && r[13].result && r[13].result.length >= 2 + 64 * 5) {
+      const slotsNext = Number(BigInt("0x" + r[13].result.slice(2 + 64 * 4, 2 + 64 * 5)));
       st.poolSlots = slotsNext;
       if (!stuck && slotsNext < POOL_SLOTS && balance >= POOL_SLOT_MIN_BNB) {
         const n = Math.min(POOL_SLOTS, slotsNext + POOL_SLOT_STEP);
@@ -794,6 +776,33 @@ export async function runOnce(env) {
           s.lastSettle = now;
           s.lastSettleTx = { hash: sent[sent.length - 1].hash, at: now, count: list.length };
         } else s.settleCursor = i;
+      }
+
+      // ---- 4. previous contract: one final referral settlement of all its wallets, after its admin paused it
+      if (legacyOpen && r[14] && r[15] && !r[14].error && !r[15].error) {
+        const lg = s.legacy;
+        const oldPaused = big(r[15].result) !== 0n && big(r[14].result) === 0n; // paused and no longer accruing
+        if (oldPaused && rpc.left >= 2) {
+          if (!lg.started) lg.started = true;
+          const batch = Math.max(10, Math.round(c.batch * load));
+          if (lg.cursor >= lg.list.length) {
+            lg.done = true;
+            lg.list = [];
+          } else {
+            const part = lg.list.slice(lg.cursor, lg.cursor + batch);
+            await save({ at: now }, true);
+            const sent = await sendTxs([{ kind: "settle", to: lg.miner, data: encodeSettleMany(part), count: part.length }]);
+            if (sent.length) {
+              lg.cursor += part.length;
+              st.actions.push(`旧合约最终结算推荐奖励 ${part.length} 个钱包：${sent[0].hash}`);
+              if (lg.cursor >= lg.list.length) {
+                lg.done = true;
+                lg.doneAt = now;
+                lg.list = [];
+              }
+            }
+          }
+        }
       }
     }
 
@@ -950,10 +959,8 @@ export function statusJson(s) {
     lastSettle: s?.lastSettleTx?.at ?? null,
     actions: st?.actions ?? [],
     errors: st?.errors ?? [],
-    // admin reminder: shown as eligible on the website but below the contract threshold right now
-    eligMismatch: st?.eligMismatch ?? null,
-    eligMinValue: st?.eligMinValue ?? null,
-    eligThreshold: st?.eligThreshold ?? null,
+    // previous contract: final referral settlement after it was paused
+    legacy: s?.legacy ? { miner: s.legacy.miner, done: !!s.legacy.done, started: !!s.legacy.started, left: Math.max(0, (s.legacy.list || []).length - (s.legacy.cursor || 0)) } : null,
   };
 }
 
@@ -967,7 +974,7 @@ export default {
     const url = new URL(request.url);
     // "/" only reaches this code when the Worker runs without the website files next to it
     const p = url.pathname.replace(/\/+$/, "") || "/";
-    if (p !== "/" && p !== "/keeper" && p !== "/keeper.json" && p !== "/keeper/team.json" && p !== "/keeper/principal.json") return new Response("Not found", { status: 404 });
+    if (p !== "/" && p !== "/keeper" && p !== "/keeper.json" && p !== "/keeper/team.json") return new Response("Not found", { status: 404 });
     let s = pageMemo.s;
     if (Date.now() - pageMemo.t > 20000) {
       try {
@@ -976,21 +983,6 @@ export default {
         s = null;
       }
       if (s) pageMemo = { t: Date.now(), s }; // remember only real data (setup in progress: always re-read)
-    }
-    if (p === "/keeper/principal.json") {
-      // amount put in (USDT raw units, withdrawals deducted in proportion) for up to 300 wallets
-      const list = (url.searchParams.get("u") || "").split(",").map((x) => x.trim().toLowerCase()).filter((x) => /^0x[0-9a-f]{40}$/.test(x)).slice(0, 300);
-      let out;
-      if (!s || !s.users) out = { ok: false, why: "no data yet" };
-      else if (s.rebuilding) out = { ok: false, why: "rebuilding" };
-      else {
-        const pr = {};
-        for (const a of list) pr[a] = s.users[a] ? s.users[a][7] || "0" : "0";
-        out = { ok: true, at: s.status?.at ?? null, p: pr };
-      }
-      return new Response(JSON.stringify(out), {
-        headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
-      });
     }
     if (p === "/keeper/team.json") {
       const u = url.searchParams.get("u") || "";

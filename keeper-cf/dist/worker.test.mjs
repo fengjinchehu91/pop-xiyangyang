@@ -1248,8 +1248,10 @@ var hmac = /* @__PURE__ */ (() => {
 hashes.hmacSha256 = (k, m) => hmac(sha256, k, m);
 hashes.sha256 = sha256;
 var DEFAULTS = {
-  MINER: "0x363CBA25a4bC4617fAF017b1e0728f4AB7473E17",
-  DEPLOY_BLOCK: 131739316,
+  MINER: "0x45bdFd13950C8f5C9c587A83A9E90eA9dEEb069e",
+  DEPLOY_BLOCK: 132001193,
+  OLD_MINER: "0x363CBA25a4bC4617fAF017b1e0728f4AB7473E17",
+  // previous mining contract (final referral settlement after it is paused)
   CHAIN_ID: 56,
   RPC_URL: "https://bsc-rpc.publicnode.com",
   RPC_URL_2: "https://bsc-dataseed.bnbchain.org",
@@ -1285,7 +1287,7 @@ var KEY_SLOT = "keeper-key";
 var REASONS = [
   [1, "\u7BA1\u7406\u5458\u5DF2\u6682\u505C"],
   [2, "\u6D41\u52A8\u6027\u4F30\u503C\u6682\u4E0D\u53EF\u7528\uFF08\u4EF7\u683C\u5386\u53F2\u4E0D\u8DB3\u3001\u504F\u79BB\u8FC7\u5927\u6216\u6D41\u52A8\u6027\u4E0D\u8DB3\uFF09"],
-  [4, "\u559C\u7F8A\u7F8A\u4EF7\u683C\u6682\u4E0D\u53EF\u7528\uFF08\u9700\u8981\u7EA6 30 \u5206\u949F\u4EF7\u683C\u5386\u53F2\uFF09"],
+  [4, "\u559C\u7F8A\u7F8A\u4EF7\u683C\u6682\u4E0D\u53EF\u7528\uFF08\u521A\u90E8\u7F72\u9700\u8981\u5148\u79EF\u7D2F\u4EF7\u683C\u5386\u53F2\uFF0C\u6216\u68C0\u67E5\u4E2D\u65AD\u8D85\u8FC7 1 \u5C0F\u65F6\uFF09"],
   [8, "\u8FD0\u8425\u94B1\u5305\u7684\u559C\u7F8A\u7F8A\u4F59\u989D\u6216\u6388\u6743\u989D\u5EA6\u4E0D\u8DB3"],
   [16, "\u6316\u77FF\u5DF2\u6C38\u4E45\u7ED3\u675F"]
 ];
@@ -1341,10 +1343,8 @@ var SEL = {
   pool: selector("POOL()"),
   slot0: selector("slot0()"),
   growObs: selector("increaseObservationCardinalityNext(uint16)"),
-  vpr: selector("valuePerRef()"),
-  threshold: selector("dynamicThresholdUsd()")
+  adminPaused: selector("adminPaused()")
 };
-var SHOWN_MIN_PRINCIPAL = 100n * 10n ** 18n;
 var POOL_SLOTS = 2400;
 var POOL_SLOT_STEP = 500;
 var POOL_SLOT_MIN_BNB = 15n * 10n ** 15n;
@@ -1459,6 +1459,7 @@ function config(env) {
   return {
     miner: str("MINER").toLowerCase(),
     deployBlock: num("DEPLOY_BLOCK"),
+    oldMiner: (str("OLD_MINER") || "").toLowerCase(),
     chainId: num("CHAIN_ID"),
     rpcs,
     logRpcs: env.LOG_RPC_URLS ? String(env.LOG_RPC_URLS).split(",").map((x) => x.trim()).filter(Boolean) : [.../* @__PURE__ */ new Set([...LOG_RPCS, ...rpcs])],
@@ -1479,7 +1480,7 @@ function freshState(c) {
     miner: c.miner,
     scanned: c.deployBlock - 1,
     chunk: c.logChunk,
-    // address -> [liquidity, hasReferrer (0/1), referrer, usdtOnlyIn, bothUsdtIn, bothPopIn, bothValueUsdt, principal]
+    // address -> [liquidity, hasReferrer (0/1), referrer, usdtOnlyIn, bothUsdtIn, bothPopIn, bothValueUsdt]
     // (amounts as decimal strings in raw token units; *In = put in by deposits, net of refunds)
     users: {},
     settleCursor: 0,
@@ -1501,7 +1502,15 @@ async function loadState(env, c) {
   try {
     let s = await env.STATE.get("state", "json");
     if (memState && memState.miner === c.miner && (!s || (memState.seq || 0) >= (s.seq || 0))) s = JSON.parse(JSON.stringify(memState));
-    if (!s || s.miner !== c.miner || ![1, 2, 3].includes(s.v)) return { ok: true, s: freshState(c) };
+    if (s && s.miner !== c.miner) {
+      const f = freshState(c);
+      for (const k of ["generatedAddr", "generatedAt", "keeperAddr", "balHist", "logsUrl"]) if (s[k] !== void 0) f[k] = s[k];
+      if (c.oldMiner && s.miner === c.oldMiner) {
+        f.legacy = { miner: s.miner, list: s.users ? settleList(s) : [], cursor: 0, started: false, done: false };
+      } else if (s.legacy && s.legacy.miner === c.oldMiner) f.legacy = s.legacy;
+      return { ok: true, s: f };
+    }
+    if (!s || ![1, 2, 3].includes(s.v)) return { ok: true, s: freshState(c) };
     if (s.v !== 3) {
       s.v = 3;
       s.usersOld = s.rebuilding && s.usersOld ? s.usersOld : s.users;
@@ -1514,7 +1523,7 @@ async function loadState(env, c) {
     return { ok: false, why: "\u8BFB\u53D6 KV \u5931\u8D25\uFF1A" + (e?.message || e), s: freshState(c) };
   }
 }
-var ZERO_ENTRY = () => ["0", 0, "", "0", "0", "0", "0", "0"];
+var ZERO_ENTRY = () => ["0", 0, "", "0", "0", "0", "0"];
 var add2 = (e, i, v) => e[i] = (BigInt(e[i] || "0") + v).toString();
 function applyLog(users, l) {
   if (l.removed) return;
@@ -1522,7 +1531,7 @@ function applyLog(users, l) {
   if (t0 !== T_JOINED && t0 !== T_DEPOSITED && t0 !== T_WITHDRAWN) return;
   const u = "0x" + l.topics[1].slice(26).toLowerCase();
   const e = users[u] || (users[u] = ZERO_ENTRY());
-  while (e.length < 8) e.push(e.length === 2 ? "" : "0");
+  while (e.length < 7) e.push(e.length === 2 ? "" : "0");
   if (t0 === T_JOINED) {
     const r = big2(l.topics[2]);
     e[1] = r !== 0n ? 1 : 0;
@@ -1531,25 +1540,18 @@ function applyLog(users, l) {
   }
   const w = (i) => BigInt("0x" + (l.data.slice(2 + 64 * i, 2 + 64 * (i + 1)) || "0"));
   const liq = w(0);
-  const before = BigInt(e[0]);
-  let v = before + (t0 === T_DEPOSITED ? liq : -liq);
+  let v = BigInt(e[0]) + (t0 === T_DEPOSITED ? liq : -liq);
   if (v < 0n) v = 0n;
   e[0] = v.toString();
-  if (t0 === T_WITHDRAWN) {
-    const pr = BigInt(e[7] || "0");
-    e[7] = (v === 0n || before === 0n ? 0n : pr - pr * (liq < before ? liq : before) / before).toString();
-    return;
-  }
+  if (t0 === T_WITHDRAWN) return;
   const usdtIn = w(1), popIn = w(2), swapped = w(3), usdtRefund = w(5), popRefund = w(6);
   const pos = (x) => x > 0n ? x : 0n;
   if (popIn === 0n) {
     add2(e, 3, pos(usdtIn - usdtRefund));
-    add2(e, 7, pos(usdtIn - usdtRefund));
   } else {
     add2(e, 4, pos(usdtIn - usdtRefund));
     add2(e, 5, pos(popIn - popRefund));
     add2(e, 6, pos(2n * (usdtIn - swapped - usdtRefund)));
-    add2(e, 7, pos(2n * (usdtIn - swapped - usdtRefund)));
   }
 }
 var settleSource = (s) => s.rebuilding && s.usersOld ? s.usersOld : s.users;
@@ -1677,7 +1679,7 @@ async function runOnce(env) {
       savedAt: 0,
       seq: 0,
       load: Math.round((x.load || 1) * 4),
-      status: { ok: t.ok, errors: t.errors, actions: t.actions, accruing: t.accruing, reasons: t.reasons, keeper: t.keeper, users: t.users, toSettle: t.toSettle, eligMismatch: t.eligMismatch }
+      status: { ok: t.ok, errors: t.errors, actions: t.actions, accruing: t.accruing, reasons: t.reasons, keeper: t.keeper, users: t.users, toSettle: t.toSettle }
     });
   };
   const fp0 = loaded.ok ? fingerprint(s) : null;
@@ -1701,6 +1703,7 @@ async function runOnce(env) {
     const { key, addr: me } = await resolveKey(env, loaded, s);
     st.keeper = me;
     s.keeperAddr = me;
+    const legacyOpen = loaded.ok && !!s.legacy && !s.legacy.done && /^0x[0-9a-f]{40}$/.test(s.legacy.miner || "");
     const ethCall = (data, from) => ["eth_call", [from ? { from, to: c.miner, data } : { to: c.miner, data }, "latest"]];
     const r = await rpc.batch([
       ["eth_chainId", []],
@@ -1716,9 +1719,10 @@ async function runOnce(env) {
       ethCall("0x" + SEL.operator),
       ethCall("0x" + SEL.owner),
       ethCall("0x" + SEL.pool),
-      ethCall("0x" + SEL.vpr),
-      ethCall("0x" + SEL.threshold),
-      ...s.pool ? [["eth_call", [{ to: s.pool, data: "0x" + SEL.slot0 }, "latest"]]] : []
+      ["eth_call", [{ to: s.pool || c.miner, data: "0x" + (s.pool ? SEL.slot0 : SEL.pool) }, "latest"]],
+      // 13: pool slot0 (once the pool is known)
+      ...legacyOpen ? [["eth_call", [{ to: s.legacy.miner, data: "0x" + SEL.accruing }, "latest"]], ["eth_call", [{ to: s.legacy.miner, data: "0x" + SEL.adminPaused }, "latest"]]] : []
+      // 14, 15
     ]);
     const need = (i, what) => {
       if (r[i].error) throw new Error(`\u8BFB\u53D6${what}\u5931\u8D25\uFF1A${r[i].error.message}`);
@@ -1828,27 +1832,9 @@ async function runOnce(env) {
       st.accruing = wouldRun;
     }
     st.gasPrice = gasPrice.toString();
-    if (!s.rebuilding && !r[13].error && !r[14].error) {
-      const vpr = Number(big2(r[13].result)) / 1e27;
-      const thr = Number(big2(r[14].result));
-      const minP = Number(SHOWN_MIN_PRINCIPAL);
-      let n = 0;
-      let minV = Infinity;
-      for (const a in s.users) {
-        const e = s.users[a];
-        const liq = +e[0];
-        if (liq <= 0 || +(e[7] || 0) < minP) continue;
-        const val = liq * vpr;
-        if (val < minV) minV = val;
-        if (val < thr) n++;
-      }
-      st.eligMismatch = n;
-      st.eligMinValue = Number.isFinite(minV) ? intStr(minV) : null;
-      st.eligThreshold = intStr(thr);
-    }
     if (!r[12].error && r[12].result && r[12].result.length >= 42) s.pool = "0x" + String(r[12].result).slice(-40).toLowerCase();
-    if (s.pool && r[15] && !r[15].error && r[15].result && r[15].result.length >= 2 + 64 * 5) {
-      const slotsNext = Number(BigInt("0x" + r[15].result.slice(2 + 64 * 4, 2 + 64 * 5)));
+    if (s.pool && r[13] && !r[13].error && r[13].result && r[13].result.length >= 2 + 64 * 5) {
+      const slotsNext = Number(BigInt("0x" + r[13].result.slice(2 + 64 * 4, 2 + 64 * 5)));
       st.poolSlots = slotsNext;
       if (!stuck && slotsNext < POOL_SLOTS && balance >= POOL_SLOT_MIN_BNB) {
         const n = Math.min(POOL_SLOTS, slotsNext + POOL_SLOT_STEP);
@@ -1946,6 +1932,31 @@ async function runOnce(env) {
           s.lastSettle = now;
           s.lastSettleTx = { hash: sent[sent.length - 1].hash, at: now, count: list.length };
         } else s.settleCursor = i;
+      }
+      if (legacyOpen && r[14] && r[15] && !r[14].error && !r[15].error) {
+        const lg = s.legacy;
+        const oldPaused = big2(r[15].result) !== 0n && big2(r[14].result) === 0n;
+        if (oldPaused && rpc.left >= 2) {
+          if (!lg.started) lg.started = true;
+          const batch = Math.max(10, Math.round(c.batch * load));
+          if (lg.cursor >= lg.list.length) {
+            lg.done = true;
+            lg.list = [];
+          } else {
+            const part = lg.list.slice(lg.cursor, lg.cursor + batch);
+            await save({ at: now }, true);
+            const sent = await sendTxs([{ kind: "settle", to: lg.miner, data: encodeSettleMany(part), count: part.length }]);
+            if (sent.length) {
+              lg.cursor += part.length;
+              st.actions.push(`\u65E7\u5408\u7EA6\u6700\u7EC8\u7ED3\u7B97\u63A8\u8350\u5956\u52B1 ${part.length} \u4E2A\u94B1\u5305\uFF1A${sent[0].hash}`);
+              if (lg.cursor >= lg.list.length) {
+                lg.done = true;
+                lg.doneAt = now;
+                lg.list = [];
+              }
+            }
+          }
+        }
       }
     }
     const h = s.balHist || (s.balHist = []);
@@ -2084,10 +2095,8 @@ function statusJson(s) {
     lastSettle: s?.lastSettleTx?.at ?? null,
     actions: st?.actions ?? [],
     errors: st?.errors ?? [],
-    // admin reminder: shown as eligible on the website but below the contract threshold right now
-    eligMismatch: st?.eligMismatch ?? null,
-    eligMinValue: st?.eligMinValue ?? null,
-    eligThreshold: st?.eligThreshold ?? null
+    // previous contract: final referral settlement after it was paused
+    legacy: s?.legacy ? { miner: s.legacy.miner, done: !!s.legacy.done, started: !!s.legacy.started, left: Math.max(0, (s.legacy.list || []).length - (s.legacy.cursor || 0)) } : null
   };
 }
 var pageMemo = { t: 0, s: null };
@@ -2098,7 +2107,7 @@ var worker_default = {
   async fetch(request, env) {
     const url = new URL(request.url);
     const p = url.pathname.replace(/\/+$/, "") || "/";
-    if (p !== "/" && p !== "/keeper" && p !== "/keeper.json" && p !== "/keeper/team.json" && p !== "/keeper/principal.json") return new Response("Not found", { status: 404 });
+    if (p !== "/" && p !== "/keeper" && p !== "/keeper.json" && p !== "/keeper/team.json") return new Response("Not found", { status: 404 });
     let s = pageMemo.s;
     if (Date.now() - pageMemo.t > 2e4) {
       try {
@@ -2107,20 +2116,6 @@ var worker_default = {
         s = null;
       }
       if (s) pageMemo = { t: Date.now(), s };
-    }
-    if (p === "/keeper/principal.json") {
-      const list = (url.searchParams.get("u") || "").split(",").map((x) => x.trim().toLowerCase()).filter((x) => /^0x[0-9a-f]{40}$/.test(x)).slice(0, 300);
-      let out;
-      if (!s || !s.users) out = { ok: false, why: "no data yet" };
-      else if (s.rebuilding) out = { ok: false, why: "rebuilding" };
-      else {
-        const pr = {};
-        for (const a of list) pr[a] = s.users[a] ? s.users[a][7] || "0" : "0";
-        out = { ok: true, at: s.status?.at ?? null, p: pr };
-      }
-      return new Response(JSON.stringify(out), {
-        headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }
-      });
     }
     if (p === "/keeper/team.json") {
       const u = url.searchParams.get("u") || "";

@@ -1,4 +1,5 @@
 // Human-readable ABI fragments matching contracts/src/XiyangMiner.sol (hand-maintained; keep in sync).
+// MINER_ABI = the current contract (rewards by 入金额度); OLD_MINER_ABI = the previous contract (users only withdraw / claim there).
 export const MINER_ABI = [
   "function owner() view returns (address)",
   "function OPERATOR() view returns (address)",
@@ -31,13 +32,15 @@ export const MINER_ABI = [
   "function lastCheckpointTime() view returns (uint64)",
   "function lastValuationTime() view returns (uint64)",
   "function MAX_VALUATION_AGE() view returns (uint32)",
+  "function TWAP_WINDOW() view returns (uint32)",
   "function valuePerRef() view returns (uint256)",
   "function totalLiquidity() view returns (uint256)",
+  "function totalPrincipal() view returns (uint256)",
   "function totalPaidReward() view returns (uint256)",
   "function totalPaidUsd() view returns (uint256)",
   "function totalBaseAccruedUsd() view returns (uint256)",
   "function participants() view returns (uint256)",
-  "function getUser(address) view returns (tuple(address referrer,bool joined,uint64 firstDepositAt,uint128 liquidity,uint256 tokenId,uint256 snapP,uint256 snap1,uint256 snap2,uint256 personalUsd,uint256 dynamicUsd,uint256 paidPersonalUsd,uint256 paidDynamicUsd,uint256 claimedPersonalReward,uint256 claimedDynamicReward,address up1,address up2,uint32 up1Mark,uint32 up2Mark,uint32 directCount,uint32 indirectCount))",
+  "function getUser(address) view returns (tuple(address referrer,bool joined,uint64 firstDepositAt,uint128 liquidity,uint256 principalUsd,uint256 tokenId,uint256 snapP,uint256 snap1,uint256 snap2,uint256 personalUsd,uint256 dynamicUsd,uint256 paidPersonalUsd,uint256 paidDynamicUsd,uint256 claimedPersonalReward,uint256 claimedDynamicReward,address up1,address up2,uint32 up1Mark,uint32 up2Mark,uint32 directCount,uint32 indirectCount))",
   "function pendingUsd(address) view returns (uint256 personal, uint256 dynamic_)",
   "function valueUsd(address) view returns (uint256)",
   "function isEligible(address) view returns (bool)",
@@ -48,6 +51,7 @@ export const MINER_ABI = [
   "function withdraw(uint128 liquidity, uint256 minPop, uint256 minUsdt, uint256 deadline) returns (uint256, uint256)",
   "function claim(uint256 minRewardOut) returns (uint256)",
   "function checkpoint() returns (bool)",
+  "function settleMany(address[] list)",
   "function setAdminPaused(bool paused)",
   "function setRewardParams(uint16 rateBps, uint16 pBps, uint16 t1Bps, uint16 t2Bps, uint256 thresholdUsd)",
   "function setSafetyParams(int24 maxDev, uint128 minLiq, uint128 minRewardLiq, uint16 runway)",
@@ -57,6 +61,7 @@ export const MINER_ABI = [
   "event Deposited(address indexed user, uint256 indexed tokenId, uint128 liquidity, uint256 usdtIn, uint256 popIn, uint256 usdtSwapped, uint256 popFromSwap, uint256 usdtRefund, uint256 popRefund)",
   "event Withdrawn(address indexed user, uint128 liquidity, uint256 popPrincipal, uint256 usdtPrincipal, uint256 popFees, uint256 usdtFees)",
   "event Claimed(address indexed user, uint256 personalUsd, uint256 dynamicUsd, uint256 personalReward, uint256 dynamicReward, uint256 rewardPriceUsd)",
+  "event PrincipalChanged(address indexed user, uint256 principalUsd)",
   "event DynamicAccrued(address indexed upline, address indexed from, uint8 tier, uint256 usd)",
   "event RunningChanged(bool running, uint8 reasons)",
   "event AdminPausedSet(bool paused)",
@@ -84,6 +89,10 @@ export const MINER_ABI = [
   "error ERC20InsufficientAllowance(address spender, uint256 allowance, uint256 needed)",
   "error ERC20InsufficientBalance(address sender, uint256 balance, uint256 needed)",
 ];
+
+// previous contract: same functions, but its User record has no principalUsd field
+const OLD_GET_USER = "function getUser(address) view returns (tuple(address referrer,bool joined,uint64 firstDepositAt,uint128 liquidity,uint256 tokenId,uint256 snapP,uint256 snap1,uint256 snap2,uint256 personalUsd,uint256 dynamicUsd,uint256 paidPersonalUsd,uint256 paidDynamicUsd,uint256 claimedPersonalReward,uint256 claimedDynamicReward,address up1,address up2,uint32 up1Mark,uint32 up2Mark,uint32 directCount,uint32 indirectCount))";
+export const OLD_MINER_ABI = MINER_ABI.filter((x) => !/totalPrincipal|PrincipalChanged/.test(x)).map((x) => (x.startsWith("function getUser(") ? OLD_GET_USER : x));
 
 export const ERC20_ABI = [
   "function balanceOf(address) view returns (uint256)",

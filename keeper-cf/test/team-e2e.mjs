@@ -2,7 +2,7 @@
 // events (also starting from an old v1 saved state), and /keeper/team.json reports the team numbers.
 import { execSync } from "node:child_process";
 import fs from "node:fs";
-import worker, { runOnce } from "../dist/worker.test.mjs";
+import worker, { runOnce, statusJson } from "../dist/worker.test.mjs";
 const RPC = "http://127.0.0.1:8546";
 const dep = JSON.parse(fs.readFileSync("/home/claude/xyy/contracts/web-deploy.json", "utf8"));
 const M = dep.miner;
@@ -63,16 +63,10 @@ const tC = await team(W.C[0]);
 check("C (bottom): empty team", tC.ok && tC.team === 0 && tC.direct === 0);
 const tB = await team(W.B[0]);
 check("B: team 1 (C)", tB.ok && tB.team === 1 && tB.direct === 1 && tB.indirect === 0);
-const pj = await (await worker.fetch(new Request(`https://x/keeper/principal.json?u=${W.A[0]},${W.B[0]},${W.C[0]}`), env)).json();
-const P = (w) => BigInt(pj.p[W[w][0].toLowerCase()]);
-check("amount put in: A ~300, B ~200 (USDT + POP), C ~50", pj.ok && P("A") > 299n * E18 && P("A") <= 300n * E18 && P("B") > 199n * E18 && P("B") <= 200n * E18 && P("C") > 49n * E18 && P("C") <= 50n * E18, JSON.stringify(pj.p));
-s = await runOnce(env); // the reminder is worked out once the history has been read
-check("admin reminder fields present", s.status.eligMismatch === 0 && s.status.eligThreshold === (100n * E18).toString(), `${s.status.eligMismatch} / ${s.status.eligThreshold} / min ${s.status.eligMinValue}`);
-// admin raises the contract threshold to 250: B (put in 200, LP ~200) is still shown eligible but the contract stops paying
-send(OPK, M, "setRewardParams(uint16,uint16,uint16,uint16,uint256)", `100 8500 1000 500 ${250n * E18}`);
+const gone = await worker.fetch(new Request(`https://x/keeper/principal.json?u=${W.A[0]}`), env);
+check("old amount-put-in endpoint is gone (the contract keeps 入金额度 itself)", gone.status === 404);
 s = await runOnce(env);
-check("reminder: 1 wallet shown eligible but below the 250 threshold, lowest value ~200", s.status.eligMismatch === 1 && BigInt(s.status.eligMinValue) > 199n * E18 && BigInt(s.status.eligMinValue) < 201n * E18, `${s.status.eligMismatch} / ${s.status.eligMinValue}`);
-fs.writeFileSync("/tmp/webtest/keeper/principal.json", JSON.stringify(pj));
+check("no admin threshold reminder any more", s.status.eligMismatch === undefined && !("eligMismatch" in statusJson(s)));
 const bad = await team("0x123");
 check("bad address refused", bad.ok === false);
 fs.mkdirSync("/tmp/webtest/keeper", { recursive: true });

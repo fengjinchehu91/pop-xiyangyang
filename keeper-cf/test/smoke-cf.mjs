@@ -19,7 +19,7 @@ const check = (n, c) => { if (!c) fails++; console.log(c ? "ok  " : "FAIL", n); 
 check("only a default export", /export \{\s*worker_default as default\s*\};?\s*$/.test(src));
 check("no Node-only APIs", !/require\(|process\.|node:/.test(src.replace(/\/\/.*$/gm, "")));
 let page = await (await worker.fetch(new Request("https://k.workers.dev/"), { STATE: env.STATE })).text();
-check("page before setup explains what is missing", page.includes("KEEPER_KEY") && page.includes("还没有运行过"));
+check("page before setup explains what happens", page.includes("自动创建检查钱包") && page.includes("还没有运行过"));
 execSync(`cast rpc evm_increaseTime 1600 --rpc-url ${RPC} && cast rpc evm_mine --rpc-url ${RPC}`);
 let p;
 await worker.scheduled({ cron: "*/10 * * * *", scheduledTime: Date.now() }, env, { waitUntil: (x) => (p = x) });

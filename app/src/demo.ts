@@ -3,7 +3,7 @@
 import type { AddQuote, AdminEvent, AdminUserRow, Downline, ExitQuote, Rec, RecKind, Snapshot, Step, TeamStats } from "./types";
 import { DEFAULT_PARAMS } from "./types";
 import type { OnSteps } from "./chain";
-import { applySlippage, E18 } from "./fmt";
+import { applySlippage, E18, meetsThreshold } from "./fmt";
 
 const now = () => Math.floor(Date.now() / 1000);
 const addr = (n: number) => "0x" + n.toString(16).padStart(4, "0") + "d3a1c9e2b47f05a8e6c1d2b3a4f5e6c7d8" + n.toString(16).padStart(2, "0");
@@ -19,6 +19,7 @@ export class DemoBackend {
     dynamicUsd: 74_400_000_000_000_000_000n,
     liquidity: 1_000_000_000_000_000_000_000n,
     valueUsd: 1250n * E18,
+    principalUsd: 1200n * E18, // 入金额度: booked when added (the LP value moves with the price, this does not)
     claimedPersonal: 21_430n * E18,
     claimedDynamic: 4_000n * E18,
   };
@@ -27,7 +28,7 @@ export class DemoBackend {
 
   async snapshot(account?: string): Promise<Snapshot> {
     const dt = BigInt(now() - this.t0);
-    const personalUsd = this.base.personalUsd + (this.base.valueUsd * 85n * dt) / (100n * 100n * 86400n);
+    const personalUsd = this.base.personalUsd + (this.base.principalUsd * 85n * dt) / (100n * 100n * 86400n);
     const s: Snapshot = {
       params: { ...DEFAULT_PARAMS },
       configured: true,
@@ -36,10 +37,12 @@ export class DemoBackend {
       adminPaused: false,
       lastCheckpoint: now() - 240,
       rewardPrice: PRICE,
+      twapMinutes: 15,
       rewardDecimals: 18,
       usdtDecimals: 18,
       popDecimals: 18,
       tvlUsd: 386_420n * E18,
+      totalPrincipalUsd: 371_800n * E18,
       participants: 1_284,
       totalPaidReward: 2_480_115n * E18,
       owner: addr(9999),
@@ -47,6 +50,13 @@ export class DemoBackend {
       runwayDays: 3,
       reserve: { balance: 8_600_000n * E18, allowance: 5_000_000n * E18, usable: 5_000_000n * E18, liabilityUsd: 21_350n * E18 },
       user: null,
+      old: null,
+      oldStatus: {
+        address: "0x363CBA25a4bC4617fAF017b1e0728f4AB7473E17", adminPaused: true, ended: false, accruing: false, claimPaused: false,
+        totalLiquidity: 4_000_000_000_000_000_000_000n, tvlUsd: 2_310n * E18, participants: 37,
+        reserve: { balance: 8_600_000n * E18, allowance: 120_000n * E18, usable: 120_000n * E18, liabilityUsd: 186n * E18 },
+        rewardPrice: PRICE,
+      },
       balances: null,
       addresses: {
         miner: "0x0000000000000000000000000000000000000000",
@@ -71,14 +81,18 @@ export class DemoBackend {
         claimedDynamic: this.base.claimedDynamic,
         referrer: addr(7),
         joined: this.base.liquidity > 0n || true,
-        eligible: this.base.valueUsd >= 100n * E18,
-        principal: 600n * E18,
+        eligible: this.base.principalUsd >= 100n * E18,
+        principalUsd: this.base.principalUsd,
         direct: 12,
         indirect: 28,
         firstDepositAt: now() - 86400 * 20,
         tokenId: 123456n,
       };
       s.balances = { usdt: 3_820n * E18, pop: 2_100_000n * E18, reward: 25_430n * E18 };
+      // previous contract: a position and rewards still to take out (演示迁移提示)
+      s.old = this.oldDone
+        ? { liquidity: 0n, valueUsd: 0n, personalUsd: 0n, dynamicUsd: 0n, referrer: addr(7), joined: true, refJoined: true }
+        : { liquidity: 900_000_000_000_000_000_000n, valueUsd: 318n * E18, personalUsd: 8_600_000_000_000_000_000n, dynamicUsd: 1_200_000_000_000_000_000n, referrer: addr(7), joined: true, refJoined: true };
     }
     return s;
   }
@@ -109,13 +123,14 @@ export class DemoBackend {
     };
   }
 
-  async quoteExit(_a: string, pctBps: number, slipBps: number, userLiq: bigint, valueUsd: bigint, thresholdUsd: bigint = 100n * E18): Promise<ExitQuote> {
+  async quoteExit(_a: string, pctBps: number, slipBps: number, userLiq: bigint, valueUsd: bigint, principalUsd: bigint, thresholdUsd: bigint): Promise<ExitQuote> {
     const liq = pctBps >= 10000 ? userLiq : (userLiq * BigInt(pctBps)) / 10000n;
     const usdt = (valueUsd * BigInt(Math.min(pctBps, 10000))) / 20000n;
     const remaining = (valueUsd * BigInt(10000 - Math.min(pctBps, 10000))) / 10000n;
+    const remainingPrincipal = pctBps >= 10000 ? 0n : (principalUsd * BigInt(10000 - pctBps)) / 10000n;
     return {
       liquidity: liq, pop: usdt * POP_PER_USDT, usdt, minPop: applySlippage(usdt * POP_PER_USDT, slipBps), minUsdt: applySlippage(usdt, slipBps),
-      remainingValueUsd: remaining, eligibleAfter: remaining >= thresholdUsd, createdAt: Date.now(),
+      remainingValueUsd: remaining, eligibleAfter: meetsThreshold(remainingPrincipal, thresholdUsd), createdAt: Date.now(),
     };
   }
 
@@ -138,6 +153,16 @@ export class DemoBackend {
   bind(_r: string, steps: Step[], on: OnSteps) { return this.fake(steps, on); }
   claim(_m: bigint, steps: Step[], on: OnSteps) { return this.fake(steps, on); }
   admin(_a: string, _x: any, steps: Step[], on: OnSteps) { return this.fake(steps, on); }
+  oldDone = false;
+  async migrateOld(_s: number, steps: Step[], on: OnSteps) {
+    const ok = await this.fake(steps, on);
+    this.oldDone = true;
+    return ok;
+  }
+  async oldLeftovers(onProgress: (d: number, t: number) => void) {
+    onProgress(1, 1);
+    return { wallets: 37, withLiquidity: 6, unclaimed: 9, unclaimedUsd: 186n * E18 };
+  }
 
   /** demo admin data: a small consistent set of events */
   async adminScan(onProgress: (d: number, t: number) => void): Promise<AdminEvent[]> {
@@ -184,12 +209,6 @@ export class DemoBackend {
       { kind, title: "动态奖励 · 第二档 5%", sign: "+", lines: [{ label: "来源", value: "0x4F9E…3C77" }, { label: "入账额度", value: "0.2600 USDT 计价（领取时换算喜羊羊）" }], time: t - 3600 * 9, tx, status: "已完成" },
     ];
     return { items: kind === "liquidity" ? L : kind === "claim" ? C : D, nextTo: null };
-  }
-
-  async principals(addrs: string[]): Promise<Record<string, bigint> | null> {
-    const out: Record<string, bigint> = {};
-    addrs.forEach((a, i) => (out[a.toLowerCase()] = BigInt([150, 80, 320, 100, 60, 500][i % 6]) * E18));
-    return out;
   }
 
   async teamStats(_addr: string): Promise<TeamStats | null> {

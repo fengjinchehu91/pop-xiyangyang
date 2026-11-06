@@ -2,19 +2,19 @@
 // injected wallet (EIP-1193). Never falls back to mock values: missing data is reported as unavailable.
 // @ts-ignore vendored ESM build of ethers v6.13.4 (MIT)
 import * as E from "./vendor/ethers.min.js";
-import { MINER_ABI, ERC20_ABI, POOL_ABI, PAIR_ABI } from "./abi";
+import { MINER_ABI, OLD_MINER_ABI, ERC20_ABI, POOL_ABI, PAIR_ABI } from "./abi";
 import type { AppConfig } from "./config";
-import type { AddQuote, AdminEvent, AdminUserRow, Downline, ExitQuote, Params, Rec, RecKind, Snapshot, Step, TeamStats } from "./types";
+import type { AddQuote, AdminEvent, AdminUserRow, Downline, ExitQuote, OldStatus, OldUserView, Params, Rec, RecKind, Snapshot, Step, TeamStats } from "./types";
 import { DEFAULT_PARAMS } from "./types";
 import { amountsForLiquidity, liquidityForAmounts, pairedAmount } from "./v3math";
-import { applySlippage, E18, fmtUnits, short } from "./fmt";
+import { applySlippage, fmtUnits, meetsThreshold, short } from "./fmt";
 
 const L_REF = 10n ** 27n;
 const Q192 = 1n << 192n;
 const ZERO = "0x0000000000000000000000000000000000000000";
 
 export type OnSteps = (steps: Step[]) => void;
-export type AdminAction = "pause" | "resume" | "checkpoint" | "approve" | "rewardParams" | "safetyParams" | "claimPause" | "claimResume" | "end";
+export type AdminAction = "pause" | "resume" | "checkpoint" | "approve" | "rewardParams" | "safetyParams" | "claimPause" | "claimResume" | "end" | "oldPause" | "oldEnd" | "oldRevoke";
 
 declare global {
   interface Window {
@@ -29,6 +29,7 @@ export class ChainBackend {
   addr = { miner: "", pool: "", pop: "", usdt: "", reward: "", rewardPool: "", npm: "" };
   dec = { usdt: 18, pop: 18, reward: 18 };
   fee = 0;
+  twapMinutes = 30;
   token0 = "";
   sqrtLo = 0n;
   sqrtHi = 0n;
@@ -38,6 +39,10 @@ export class ChainBackend {
 
   rpc: any;
   minerRpc: any;
+  // previous contract (users withdraw and claim there before adding again here); null = none configured
+  old: any = null;
+  oldRpc: any = null;
+  oldSqrt: [bigint, bigint] = [0n, 0n];
 
   constructor(cfg: AppConfig) {
     this.cfg = cfg;
@@ -98,10 +103,31 @@ export class ChainBackend {
       const [du, dp, dr] = await Promise.all([t(usdt).decimals(), t(pop).decimals(), t(reward).decimals()]);
       this.dec = { usdt: Number(du), pop: Number(dp), reward: Number(dr) };
       this.fee = Number(fee);
+      this.twapMinutes = Math.round(Number(await this.miner.TWAP_WINDOW().catch(() => 1800)) / 60);
       this.token0 = token0;
       this.ready = true;
     } catch (e: any) {
       this.problem = "读取链上数据失败：" + (e?.shortMessage || e?.message || "未知错误");
+      return;
+    }
+    await this.initOld();
+  }
+
+  /** previous contract: only used if it sits on the same pool, position manager and reward token */
+  private async initOld(): Promise<void> {
+    const a = this.cfg.oldMiner;
+    if (!a || !E.isAddress(a) || a.toLowerCase() === this.cfg.miner.toLowerCase()) return;
+    try {
+      if ((await this.read.getCode(a)) === "0x") return;
+      const o = new E.Contract(a, OLD_MINER_ABI, this.read);
+      const [pool, npm, reward, lo, hi] = await Promise.all([o.POOL(), o.NPM(), o.REWARD(), o.SQRT_LOWER(), o.SQRT_UPPER()]);
+      const same = (x: string, y: string) => String(x).toLowerCase() === String(y).toLowerCase();
+      if (!same(pool, this.addr.pool) || !same(npm, this.addr.npm) || !same(reward, this.addr.reward)) return;
+      this.old = o;
+      this.oldRpc = this.read === this.rpc ? o : new E.Contract(a, OLD_MINER_ABI, this.rpc);
+      this.oldSqrt = [lo, hi];
+    } catch {
+      /* previous contract unreadable: the page simply shows no migration hint */
     }
   }
 
@@ -115,10 +141,12 @@ export class ChainBackend {
       adminPaused: false,
       lastCheckpoint: 0,
       rewardPrice: null,
+      twapMinutes: this.twapMinutes,
       rewardDecimals: 18,
       usdtDecimals: 18,
       popDecimals: 18,
       tvlUsd: null,
+      totalPrincipalUsd: null,
       participants: 0,
       totalPaidReward: 0n,
       owner: "",
@@ -126,6 +154,8 @@ export class ChainBackend {
       runwayDays: 0,
       reserve: null,
       user: null,
+      old: null,
+      oldStatus: null,
       balances: null,
       addresses: { ...this.addr, pool: this.addr.pool || this.cfg.pool, pop: this.addr.pop || this.cfg.pop, reward: this.addr.reward || this.cfg.reward },
       fetchedAt: Date.now(),
@@ -136,7 +166,7 @@ export class ChainBackend {
     if (!this.ready) return this.emptySnap(this.problem || "未就绪");
     const m = this.miner;
     const params = await this.params();
-    const [accruing, reasons, adminPaused, lastCp, vpr, totalLiq, participants, paidReward, owner, operator, runway, rp, reserve] =
+    const [accruing, reasons, adminPaused, lastCp, vpr, totalLiq, participants, paidReward, owner, operator, runway, rp, reserve, totalPr] =
       await Promise.all([
         m.accruing(),
         m.pauseReasons(),
@@ -151,6 +181,7 @@ export class ChainBackend {
         m.runwayDays(),
         m.rewardPriceView(),
         m.reserveView(),
+        m.totalPrincipal(),
       ]);
     const snap: Snapshot = {
       ...this.emptySnap(""),
@@ -167,6 +198,7 @@ export class ChainBackend {
       usdtDecimals: this.dec.usdt,
       popDecimals: this.dec.pop,
       tvlUsd: vpr > 0n ? (totalLiq * vpr) / L_REF : null,
+      totalPrincipalUsd: totalPr,
       participants: Number(participants),
       totalPaidReward: paidReward,
       owner,
@@ -185,9 +217,9 @@ export class ChainBackend {
         t(this.addr.pop).balanceOf(account),
         t(this.addr.reward).balanceOf(account),
       ]);
-      const [amounts, prin] = await Promise.all([
+      const [amounts, old] = await Promise.all([
         u.liquidity > 0n ? this.positionAmounts(u.liquidity) : Promise.resolve([0n, 0n] as [bigint, bigint]),
-        this.principals([account]).catch(() => null),
+        this.oldUser(account, u).catch(() => null),
       ]);
       snap.user = {
         liquidity: u.liquidity,
@@ -201,15 +233,48 @@ export class ChainBackend {
         referrer: u.referrer === ZERO ? "" : u.referrer,
         joined: u.joined,
         eligible: elig,
-        principal: prin ? prin[account.toLowerCase()] ?? null : null,
+        principalUsd: BigInt(u.principalUsd),
         direct: Number(u.directCount),
         indirect: Number(u.indirectCount),
         firstDepositAt: Number(u.firstDepositAt),
         tokenId: BigInt(u.tokenId),
       };
       snap.balances = { usdt: bu, pop: bp, reward: br };
+      snap.old = old;
+      const me = account.toLowerCase();
+      if (this.old && [owner, operator].some((x: string) => String(x).toLowerCase() === me)) snap.oldStatus = await this.oldStatus().catch(() => null);
     }
     return snap;
+  }
+
+  /** this wallet in the previous contract; the old referrer is checked against the new contract only while this
+   * wallet still has to bind here */
+  private async oldUser(account: string, now: any): Promise<OldUserView | null> {
+    const o = this.old;
+    if (!o) return null;
+    const [u, pend, val] = await Promise.all([o.getUser(account), o.pendingUsd(account), o.valueUsd(account)]);
+    const referrer = u.referrer === ZERO ? "" : String(u.referrer);
+    const needBind = !!referrer && now.referrer === ZERO && !now.joined;
+    const refJoined = needBind ? Boolean((await this.miner.getUser(referrer)).joined) : null;
+    return { liquidity: u.liquidity, valueUsd: val, personalUsd: pend[0], dynamicUsd: pend[1], referrer, joined: u.joined, refJoined };
+  }
+
+  /** previous contract state for the admin page */
+  async oldStatus(): Promise<OldStatus | null> {
+    const o = this.old;
+    if (!o) return null;
+    const [adminPaused, ended, accruing, claimPaused, totalLiq, vpr, participants, reserve, rp] = await Promise.all([
+      o.adminPaused(), o.ended(), o.accruing(), o.claimPaused(), o.totalLiquidity(), o.valuePerRef(), o.participants(), o.reserveView(), o.rewardPriceView(),
+    ]);
+    return {
+      address: String(o.target),
+      adminPaused, ended, accruing, claimPaused,
+      totalLiquidity: totalLiq,
+      tvlUsd: vpr > 0n ? (totalLiq * vpr) / L_REF : null,
+      participants: Number(participants),
+      reserve: { balance: reserve[0], allowance: reserve[1], usable: reserve[2], liabilityUsd: reserve[3] },
+      rewardPrice: rp[0] ? rp[1] : null,
+    };
   }
 
   async params(): Promise<Params> {
@@ -329,10 +394,11 @@ export class ChainBackend {
     };
   }
 
-  async quoteExit(account: string, pctBps: number, slipBps: number, userLiq: bigint, valueUsd: bigint, thresholdUsd: bigint = 100n * E18): Promise<ExitQuote> {
+  async quoteExit(account: string, pctBps: number, slipBps: number, userLiq: bigint, valueUsd: bigint, principalUsd: bigint, thresholdUsd: bigint): Promise<ExitQuote> {
     const liq = pctBps >= 10000 ? userLiq : (userLiq * BigInt(pctBps)) / 10000n;
     const [pop, usdt] = liq > 0n ? await this.positionAmounts(liq) : [0n, 0n];
     const remainingValueUsd = userLiq > 0n ? (valueUsd * (userLiq - liq)) / userLiq : 0n;
+    const remainingPrincipal = userLiq > 0n && liq < userLiq ? principalUsd - (principalUsd * liq) / userLiq : 0n;
     void account;
     return {
       liquidity: liq,
@@ -341,7 +407,7 @@ export class ChainBackend {
       minPop: applySlippage(pop, slipBps),
       minUsdt: applySlippage(usdt, slipBps),
       remainingValueUsd,
-      eligibleAfter: remainingValueUsd >= thresholdUsd,
+      eligibleAfter: meetsThreshold(remainingPrincipal, thresholdUsd),
       createdAt: Date.now(),
     };
   }
@@ -466,6 +532,77 @@ export class ChainBackend {
     );
   }
 
+  /** previous contract: take all liquidity out, then claim everything still owed there (each step skipped when
+   * there is nothing to do) */
+  async migrateOld(slipBps: number, steps: Step[], on: OnSteps): Promise<boolean> {
+    if (!this.old) throw new Error("没有旧矿池");
+    const s = await this.signer();
+    const from = await s.getAddress();
+    const o = new E.Contract(this.old.target, OLD_MINER_ABI, s);
+    return this.runSteps(
+      steps,
+      [
+        async () => {
+          const u = await this.old.getUser(from);
+          const liq: bigint = u.liquidity;
+          if (liq === 0n) return null;
+          const [a0, a1] = amountsForLiquidity(await this.spotSqrt(), this.oldSqrt[0], this.oldSqrt[1], liq);
+          const [pop, usdt] = this.token0.toLowerCase() === this.addr.pop.toLowerCase() ? [a0, a1] : [a1, a0];
+          const dl = await this.deadline();
+          const [mp, mu] = [applySlippage(pop, slipBps), applySlippage(usdt, slipBps)];
+          await this.precheck(() => this.oldRpc.withdraw.staticCall(liq, mp, mu, dl, { from }));
+          return o.withdraw(liq, mp, mu, dl);
+        },
+        async () => {
+          const [pend, rp] = await Promise.all([this.old.pendingUsd(from), this.old.rewardPriceView()]);
+          const usd: bigint = pend[0] + pend[1];
+          if (usd === 0n) return null;
+          if (!rp[0]) throw new Error("RewardPriceUnavailable");
+          const minOut = applySlippage((usd * 10n ** BigInt(this.dec.reward)) / rp[1], slipBps);
+          await this.precheck(() => this.oldRpc.claim.staticCall(minOut, { from }));
+          return o.claim(minOut);
+        },
+      ],
+      on,
+    );
+  }
+
+  /** admin: every wallet of the previous contract and what it still has there (scans its Joined records) */
+  async oldLeftovers(onProgress: (done: number, total: number) => void): Promise<{ wallets: number; withLiquidity: number; unclaimed: number; unclaimedUsd: bigint }> {
+    const o = this.old;
+    if (!o) throw new Error("没有旧矿池");
+    const head = await this.latestBlock();
+    const from = this.cfg.oldDeployBlock || 0;
+    const total = Math.max(1, head - from + 1);
+    const users = new Set<string>();
+    for (let start = from; start <= head; start += this.cfg.logChunk) {
+      const end = Math.min(head, start + this.cfg.logChunk - 1);
+      let logs: any[];
+      try {
+        logs = await o.queryFilter(o.filters.Joined(), start, end);
+      } catch (e) {
+        if (this.oldRpc === o) throw e;
+        logs = await this.oldRpc.queryFilter(this.oldRpc.filters.Joined(), start, end);
+      }
+      for (const l of logs) users.add(String(l.args.user));
+      onProgress(end - from + 1, total);
+    }
+    const list = [...users];
+    let withLiquidity = 0, unclaimed = 0, unclaimedUsd = 0n;
+    for (let i = 0; i < list.length; i += 20) {
+      const part = await Promise.all(list.slice(i, i + 20).map(async (a) => Promise.all([o.getUser(a), o.pendingUsd(a)])));
+      for (const [u, p] of part) {
+        if (u.liquidity > 0n) withLiquidity++;
+        const usd: bigint = p[0] + p[1];
+        if (usd > 0n) {
+          unclaimed++;
+          unclaimedUsd += usd;
+        }
+      }
+    }
+    return { wallets: list.length, withLiquidity, unclaimed, unclaimedUsd };
+  }
+
   async admin(action: AdminAction, arg: any, steps: Step[], on: OnSteps): Promise<boolean> {
     const s = await this.signer();
     const m = new E.Contract(this.addr.miner, MINER_ABI, s);
@@ -479,6 +616,9 @@ export class ChainBackend {
       claimPause: () => m.setClaimPaused(true),
       claimResume: () => m.setClaimPaused(false),
       end: () => m.endMining(),
+      oldPause: () => new E.Contract(this.old.target, OLD_MINER_ABI, s).setAdminPaused(true),
+      oldEnd: () => new E.Contract(this.old.target, OLD_MINER_ABI, s).endMining(),
+      oldRevoke: () => new E.Contract(this.addr.reward, ERC20_ABI, s).approve(this.old.target, 0n),
     };
     return this.runSteps(steps, [fns[action]], on);
   }
@@ -549,18 +689,6 @@ export class ChainBackend {
       if (this.minerRpc === this.miner) throw e;
       return await this.minerRpc.queryFilter(filter, start, end);
     }
-  }
-
-  /** amount each wallet put in (USDT raw, withdrawals deducted in proportion), from the automatic check service */
-  async principals(addrs: string[]): Promise<Record<string, bigint> | null> {
-    if (!addrs.length) return {};
-    const r = await fetch(`./keeper/principal.json?u=${addrs.slice(0, 300).join(",")}`, { cache: "no-store" });
-    if (!r.ok) return null;
-    const j = await r.json();
-    if (!j || !j.ok || !j.p) return null;
-    const out: Record<string, bigint> = {};
-    for (const a in j.p) out[a.toLowerCase()] = BigInt(j.p[a]);
-    return out;
   }
 
   /** team statistics, worked out by the automatic check service from the chain's records (same website) */
