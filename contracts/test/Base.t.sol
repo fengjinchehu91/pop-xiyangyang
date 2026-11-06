@@ -36,10 +36,10 @@ abstract contract BaseTest is Test {
 
     function setUp() public virtual {
         vm.warp(1_700_000_000);
-        factory = deployCode("UniswapV3Factory.sol:UniswapV3Factory");
+        factory = deployCode("out/UniswapV3Factory.sol/UniswapV3Factory.json");
         npm = INonfungiblePositionManager(
             deployCode(
-                "NonfungiblePositionManager.sol:NonfungiblePositionManager",
+                "out/NonfungiblePositionManager.sol/NonfungiblePositionManager.json",
                 abi.encode(factory, makeAddr("weth"), address(0))
             )
         );

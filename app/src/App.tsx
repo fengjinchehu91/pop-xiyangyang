@@ -567,7 +567,7 @@ function MinePage(props: {
                   直推 {u?.direct ?? 0} · 间推 {u?.indirect ?? 0} · 合计 {(u?.direct ?? 0) + (u?.indirect ?? 0)}
                 </div>
               </div>
-              <span className={"pill " + (u?.eligible ? "ok" : "no")}>{u?.eligible ? "动态资格有效" : `未达${usd0(snap.params.thresholdUsd)} USDT门槛`}</span>
+              <span className={"pill " + (u?.eligible ? "ok" : "no")}>{u?.eligible ? "动态资格有效" : !u || u.liquidity === 0n ? "动态资格未生效" : `未达${usd0(snap.params.thresholdUsd)} USDT门槛`}</span>
             </div>
           </section>
         </>
@@ -635,7 +635,15 @@ function ReferPage({ cfg, snap, live, account, backend, onConnect, toast }: { cf
         <div className="elig-ic">{u?.eligible ? "✓" : "!"}</div>
         <div>
           <b>{u?.eligible ? "动态资格已生效" : "动态资格未生效"}</b>
-          <div>{u?.eligible ? "入金 ≥ 100 USDT 即可享受动态资格" : `距 ${usd0(thr)} USDT 门槛还差 ${fmtUnits(gap > 0n ? gap : 0n, 18)} USDT`}</div>
+          <div>
+            {u?.eligible
+              ? "入金 ≥ 100 USDT 即可享受动态资格"
+              : !u || u.liquidity === 0n
+                ? u?.joined
+                  ? "已撤回流动性，重新添加 ≥ 100 USDT 即可恢复"
+                  : "添加 ≥ 100 USDT 流动性即可享受动态资格"
+                : `距 ${usd0(thr)} USDT 门槛还差 ${fmtUnits(gap > 0n ? gap : 0n, 18)} USDT`}
+          </div>
         </div>
       </section>
 
@@ -679,7 +687,7 @@ function ReferPage({ cfg, snap, live, account, backend, onConnect, toast }: { cf
           <b>{effective ?? "—"}</b>
         </div>
       </section>
-      <p className="fine pad">人数只算添加过流动性的钱包，重复添加不重复计数；团队总人数包括你下面所有层级，不含你自己。有效 = 当前LP参考价值 ≥ {usd0(thr)} USDT。</p>
+      <p className="fine pad">人数只算添加过流动性的钱包，重复添加不重复计数；团队总人数包括你下面所有层级，不含你自己。有效 = 入金 ≥ 100 USDT 且没有撤回。</p>
       <TeamCard snap={snap} team={team} />
 
       <section className="card reward dyn">
@@ -914,6 +922,11 @@ function AddSheet({ cfg, snap, backend, refParam, account, canTx, close, done }:
   const usdtAmt = parseUnitsSafe(usdtIn, snap.usdtDecimals);
   const popAmt = mode === "both" ? parseUnitsSafe(popIn, snap.popDecimals) : 0n;
   const overU = usdtAmt !== null && snap.balances && usdtAmt > snap.balances.usdt;
+  // 没有仓位时（第一次添加、或撤回后重新添加）最少 100 USDT；已有仓位追加不限
+  const hasPos = !!snap.user && snap.user.liquidity > 0n;
+  const minAdd = 100n * 10n ** BigInt(snap.usdtDecimals);
+  const addValue = usdtAmt ? (mode === "both" ? 2n * usdtAmt : usdtAmt) : 0n; // USDT + POP: the POP side is worth the same
+  const tooSmall = !hasPos && !!usdtAmt && usdtAmt > 0n && addValue < minAdd;
   const overP = mode === "both" && popAmt !== null && snap.balances && popAmt > snap.balances.pop;
   const plain = (v: bigint, d: number) => fmtUnits(v, d, 6).replace(/,/g, "").replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
   // 改一边，另一边按池子当前价格自动算出来
@@ -1018,7 +1031,7 @@ function AddSheet({ cfg, snap, backend, refParam, account, canTx, close, done }:
             全部
           </button>
         </div>
-        {overU && <em className="err">USDT 余额不足</em>}
+        {overU ? <em className="err">USDT 余额不足</em> : tooSmall ? <em className="err">{mode === "both" ? "最少添加 100 USDT（USDT + POP 合计）" : "最少添加 100 USDT"}</em> : null}
       </label>
       {mode === "both" && (
         <label className="inp">
@@ -1103,7 +1116,7 @@ function AddSheet({ cfg, snap, backend, refParam, account, canTx, close, done }:
       ) : expired ? (
         <button className="btn-gold wide" onClick={() => backend.quoteAdd(mode, usdtAmt!, popAmt!, SLIP_BPS).then(setQ)}>刷新报价</button>
       ) : (
-        <button className="btn-green wide" disabled={!canTx || !q || running || !!overU || !!overP || pairing || needConfirmRef || refInvalid} onClick={go}>
+        <button className="btn-green wide" disabled={!canTx || !q || running || !!overU || !!overP || pairing || needConfirmRef || refInvalid || tooSmall} onClick={go}>
           {running ? "处理中…" : refInvalid ? "推荐人还没有入金" : steps?.some((x) => x.status === "error") ? "重试" : "授权并添加"}
         </button>
       )}
@@ -1113,7 +1126,7 @@ function AddSheet({ cfg, snap, backend, refParam, account, canTx, close, done }:
 
 function ExitSheet({ snap, backend, account, canTx, close, done }: { snap: Snapshot; backend: Backend; account: string; canTx: boolean; close: () => void; done: () => void }) {
   const u = snap.user!;
-  const [pct, setPct] = useState(5000);
+  const pct = 10000; // 只能全部撤回（撤回后动态资格失效，重新添加 ≥ 100 USDT 恢复）
   const [q, setQ] = useState<ExitQuote | null>(null);
   const [steps, setSteps] = useState<Step[] | null>(null);
   const [running, setRunning] = useState(false);
@@ -1124,7 +1137,7 @@ function ExitSheet({ snap, backend, account, canTx, close, done }: { snap: Snaps
       .quoteExit(account, pct, SLIP_BPS, u.liquidity, u.valueUsd, snap.params.thresholdUsd)
       .then(setQ)
       .catch((e) => setErr("报价失败：" + humanError(e)));
-  }, [pct]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const go = async () => {
     if (!q) return;
     const s: Step[] = [{ label: "解除流动性，返还 POP + USDT 及手续费", status: "idle" }];
@@ -1141,15 +1154,7 @@ function ExitSheet({ snap, backend, account, canTx, close, done }: { snap: Snaps
   const allDone = steps?.every((x) => x.status === "done");
   return (
     <Sheet title="撤回流动性" close={close} icon={<span className="ic-c">⊖</span>}>
-      <div className="pct-big">{pct >= 10000 ? "全部" : `${pct / 100}%`}</div>
-      <div className="pct-row">
-        {[2500, 5000, 7500, 10000].map((p) => (
-          <button key={p} className={pct === p ? "on" : ""} onClick={() => setPct(p)} disabled={running}>
-            {p === 10000 ? "全部" : `${p / 100}%`}
-          </button>
-        ))}
-      </div>
-      <input type="range" min={100} max={10000} step={100} value={pct} onChange={(e) => setPct(Number(e.target.value))} disabled={running} className="range" aria-label="退出比例" />
+      <div className="pct-big">全部撤回</div>
       {err && <div className="alert">{err}</div>}
       <div className="quote">
         <b className="q-title">预计返还</b>
@@ -1169,13 +1174,10 @@ function ExitSheet({ snap, backend, account, canTx, close, done }: { snap: Snaps
       </div>
       <div className="quote">
         <div className="qr-row">
-          <span>剩余LP参考价值</span>
-          <b>{q ? fmtUnits(q.remainingValueUsd, 18) : "…"} USDT</b>
+          <span>撤回后动态资格</span>
+          <b className="err">将失效</b>
         </div>
-        <div className="qr-row">
-          <span>动态资格</span>
-          <b className={q?.eligibleAfter ? "ok-t" : "err"}>{q ? (q.eligibleAfter ? "保持有效" : u.eligible ? "将失效" : "未达门槛") : "…"}</b>
-        </div>
+        <p className="fine">重新添加 ≥ 100 USDT 即可恢复。</p>
       </div>
       <p className="fine">✓ 已累计的个人和动态奖励保留，可另行领取；退出不会强制领取喜羊羊。断开钱包不等于退出。</p>
       {steps && <Steps steps={steps} />}
@@ -1259,7 +1261,7 @@ function RulesSheet({ snap, close }: { snap: Snapshot | null; close: () => void 
         <p><b>计价与领取：</b>奖励按 USDT 计价记账，领取时按喜羊羊「30 分钟平均价」和「现价」中较高的那个换算，由您手动领取并支付 BNB 网络费。页面数字每 3 秒更新一次预计值，不代表链上交易。</p>
         <p><b>估值更新：</b>系统每分钟自动检查，约每 25 分钟更新一次估值（需要暂停或恢复时立即更新）；两次检查之间按上一次估值计息；超过 2 小时没有有效估值会自动停止计息，恢复后不补计。</p>
         <p><b>暂停：</b>运营钱包储备/授权不足、报价失效或管理员暂停时，停止新增入金和新增计息；已累计奖励保留；随时可以退出本金。</p>
-        <p><b>动态资格：</b>本人 LP 参考价值 ≥ {usd0(pr.thresholdUsd)} USDT。资格在下级每次结算时判定（下级操作或系统定期结算）；您自己退出导致失效时，从退出那一刻起停止获得动态奖励；恢复后不追溯。</p>
+        <p><b>动态资格：</b>入金 ≥ 100 USDT 即可享受，币价涨跌不影响；撤回流动性后失效，从撤回那一刻起停止获得动态奖励，重新添加 ≥ 100 USDT 后恢复，不追溯。</p>
         <p><b>退出：</b>固定返还 POP + USDT 及该仓位手续费，不保证等于原入金金额。</p>
         <p><b>风险：</b>奖励来自运营钱包持有的喜羊羊，不是增发，也不保证一直足额兑付；价格波动会影响到手数量与本金价值。</p>
       </div>
