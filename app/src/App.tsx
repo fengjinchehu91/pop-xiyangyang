@@ -505,7 +505,6 @@ function LockPage({ cfg, snap, account, backend, canTx, onConnect }: { cfg: AppC
             </div>
           </div>
           <div className="bar"><i style={{ width: `${Math.min(100, minePct)}%` }} /></div>
-          <p className="fine">累计锁仓额度达到 {thr} USDT 即永久开通（同时挖矿入金额度需 ≥ {usd0(snap.params.thresholdUsd)} USDT）。下级锁仓时，您可拿 5% 或 10% 推荐奖励；您没开通时会往上顺延，最多 3 代。</p>
         </section>
       )}
 
