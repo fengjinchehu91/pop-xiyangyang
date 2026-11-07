@@ -2,9 +2,9 @@
 // injected wallet (EIP-1193). Never falls back to mock values: missing data is reported as unavailable.
 // @ts-ignore vendored ESM build of ethers v6.13.4 (MIT)
 import * as E from "./vendor/ethers.min.js";
-import { MINER_ABI, OLD_MINER_ABI, ERC20_ABI, POOL_ABI, PAIR_ABI } from "./abi";
+import { MINER_ABI, OLD_MINER_ABI, LOCK_ABI, ERC20_ABI, POOL_ABI, PAIR_ABI } from "./abi";
 import type { AppConfig } from "./config";
-import type { AddQuote, AdminEvent, AdminUserRow, Downline, ExitQuote, OldStatus, OldUserView, Params, Rec, RecKind, Snapshot, Step, TeamStats } from "./types";
+import type { AddQuote, AdminEvent, AdminUserRow, Downline, ExitQuote, LockItem, LockView, OldStatus, OldUserView, Params, Rec, RecKind, Snapshot, Step, TeamStats } from "./types";
 import { DEFAULT_PARAMS } from "./types";
 import { amountsForLiquidity, liquidityForAmounts, pairedAmount } from "./v3math";
 import { applySlippage, fmtUnits, meetsThreshold, short } from "./fmt";
@@ -14,6 +14,7 @@ const Q192 = 1n << 192n;
 const ZERO = "0x0000000000000000000000000000000000000000";
 
 export type OnSteps = (steps: Step[]) => void;
+export type LockAdminAction = "threshold" | "pause" | "resume" | "approve";
 export type AdminAction = "pause" | "resume" | "checkpoint" | "approve" | "rewardParams" | "safetyParams" | "claimPause" | "claimResume" | "end" | "oldPause" | "oldEnd" | "oldRevoke";
 
 declare global {
@@ -43,6 +44,10 @@ export class ChainBackend {
   old: any = null;
   oldRpc: any = null;
   oldSqrt: [bigint, bigint] = [0n, 0n];
+  // 锁仓 contract (null = not configured)
+  lock: any = null;
+  lockRpc: any = null;
+  lockPair: { pair: any; rewardIs0: boolean; viaPop: boolean } | null = null;
 
   constructor(cfg: AppConfig) {
     this.cfg = cfg;
@@ -111,6 +116,222 @@ export class ChainBackend {
       return;
     }
     await this.initOld();
+    await this.initLock();
+  }
+
+  /** 锁仓 contract: only used if it belongs to this mining contract */
+  private async initLock(): Promise<void> {
+    const a = this.cfg.lock;
+    if (!a || !E.isAddress(a)) return;
+    try {
+      if ((await this.read.getCode(a)) === "0x") return;
+      const l = new E.Contract(a, LOCK_ABI, this.read);
+      const [miner, pair, viaPop] = await Promise.all([l.MINER(), l.PAIR(), l.PAIR_VIA_POP()]);
+      if (String(miner).toLowerCase() !== this.addr.miner.toLowerCase()) return;
+      const p = new E.Contract(pair, PAIR_ABI, this.read);
+      const t0 = String(await p.token0());
+      this.lock = l;
+      this.lockRpc = this.read === this.rpc ? l : new E.Contract(a, LOCK_ABI, this.rpc);
+      this.lockPair = { pair: p, rewardIs0: t0.toLowerCase() === this.addr.reward.toLowerCase(), viaPop: Boolean(viaPop) };
+    } catch {
+      /* 锁仓 not available: the page says so */
+    }
+  }
+
+  // ------------------------------------------------------------------ 锁仓
+  async lockView(account: string): Promise<LockView | null> {
+    const l = this.lock;
+    if (!l) return null;
+    const rw = new E.Contract(this.addr.reward, ERC20_ABI, this.read);
+    const [paused, thr, owner, op, tl, tc, to, tr, tu] = await Promise.all([
+      l.paused(), l.thresholdUsd(), l.owner(), l.OPERATOR(), l.totalLocked(), l.totalClaimed(), l.totalOwnReward(), l.totalRefReward(), l.totalRefUnpaid(),
+    ]);
+    const [allowance, balance] = await Promise.all([rw.allowance(op, l.target), rw.balanceOf(op)]);
+    const v: LockView = {
+      address: String(l.target),
+      paused, thresholdUsd: thr, owner: String(owner),
+      totals: { locked: tl, claimed: tc, ownReward: to, refReward: tr, refUnpaid: tu },
+      operator: { allowance, balance },
+      me: null,
+    };
+    if (account) {
+      const t = (a: string) => new E.Contract(a, ERC20_ABI, this.read);
+      const [lu, rr, cr, el, bal, own, ref, n, bu, br] = await Promise.all([
+        l.lockedUsd(account), l.rightsReached(account), l.canRefer(account), this.miner.isEligible(account), l.balances(account),
+        l.ownRewardOf(account), l.refRewardOf(account), l.lockCount(account), t(this.addr.usdt).balanceOf(account), t(this.addr.reward).balanceOf(account),
+      ]);
+      const count = Number(n);
+      const from = Math.max(0, count - 100);
+      const raw: any[] = count > 0 ? await l.locksOf(account, from, 100) : [];
+      const locks: LockItem[] = raw.map((x: any, i: number) => ({ id: from + i, amount: x.amount, claimed: x.claimed, start: Number(x.start), days: Number(x.days_) })).reverse();
+      v.me = { lockedUsd: lu, rightsReached: rr, canRefer: cr, miningEligible: el, stillLocked: bal[0], claimable: bal[1], ownReward: own, refReward: ref, locks, usdt: bu, reward: br };
+    }
+    return v;
+  }
+
+  /** 喜羊羊 that `usdtIn` buys now (spot price, pool fees; the V3 leg's price impact is left to the slippage margin) */
+  async lockQuote(usdtIn: bigint): Promise<bigint> {
+    const lp = this.lockPair;
+    if (!lp || usdtIn <= 0n) return 0n;
+    const [r0, r1] = await lp.pair.getReserves();
+    const [rR, rC]: [bigint, bigint] = lp.rewardIs0 ? [r0, r1] : [r1, r0];
+    let inC = usdtIn;
+    if (lp.viaPop) {
+      const sp = await this.spotSqrt();
+      const net = (usdtIn * BigInt(1_000_000 - this.fee)) / 1_000_000n;
+      const usdtIs0 = this.token0.toLowerCase() === this.addr.usdt.toLowerCase();
+      // pool price = token1 per token0 = sp^2 / 2^192
+      inC = usdtIs0 ? (net * sp * sp) >> 192n : (net << 192n) / (sp * sp);
+    }
+    const withFee = inC * 9975n;
+    return (withFee * rR) / (rC * 10_000n + withFee);
+  }
+
+  /** 锁仓额度 of `amount` 喜羊羊 from the wallet (contract's spot valuation, 18-dec USD) */
+  async lockValue(amount: bigint): Promise<bigint> {
+    if (!this.lock || amount <= 0n) return 0n;
+    return this.lock.valueUsd(amount);
+  }
+
+  private async lockOperatorCanPay(reward: bigint): Promise<void> {
+    const v = await this.lockView("");
+    // own reward + (possibly) the referral reward
+    if (!v || v.operator.allowance < reward * 2n || v.operator.balance < reward * 2n) throw new Error("OperatorShort");
+  }
+
+  private async approveTo(signer: any, token: string, spender: string, amount: bigint): Promise<any | null> {
+    const owner = await signer.getAddress();
+    const c = new E.Contract(token, ERC20_ABI, signer);
+    const cur: bigint = await c.allowance(owner, spender);
+    if (cur >= amount) return null;
+    return c.approve(spender, amount); // exact amount, not unlimited
+  }
+
+  async lockBuy(usdtIn: bigint, lockBps: number, days: number, slipBps: number, steps: Step[], on: OnSteps): Promise<boolean> {
+    if (!this.lock) throw new Error("锁仓暂未开放");
+    const s = await this.signer();
+    const from = await s.getAddress();
+    const l = new E.Contract(this.lock.target, LOCK_ABI, s);
+    const rewardOf = (out: bigint) => (((out * BigInt(lockBps)) / 10_000n) * BigInt(days === 200 ? 1000 : 500)) / 10_000n;
+    // before asking for any signature: can the operator wallet pay the rewards right now?
+    await this.lockOperatorCanPay(rewardOf(await this.lockQuote(usdtIn)));
+    return this.runSteps(
+      steps,
+      [
+        () => this.approveTo(s, this.addr.usdt, String(this.lock.target), usdtIn),
+        async () => {
+          const exp = await this.lockQuote(usdtIn);
+          await this.lockOperatorCanPay(rewardOf(exp));
+          const minOut = applySlippage(exp, slipBps);
+          const dl = await this.deadline();
+          await this.precheck(() => this.lockRpc.buyAndLock.staticCall(usdtIn, lockBps, days, minOut, dl, { from }));
+          return l.buyAndLock(usdtIn, lockBps, days, minOut, dl);
+        },
+      ],
+      on,
+    );
+  }
+
+  async lockWallet(amount: bigint, days: number, steps: Step[], on: OnSteps): Promise<boolean> {
+    if (!this.lock) throw new Error("锁仓暂未开放");
+    const s = await this.signer();
+    const from = await s.getAddress();
+    const l = new E.Contract(this.lock.target, LOCK_ABI, s);
+    await this.lockOperatorCanPay((amount * BigInt(days === 200 ? 1000 : 500)) / 10_000n); // before any signature
+    return this.runSteps(
+      steps,
+      [
+        () => this.approveTo(s, this.addr.reward, String(this.lock.target), amount),
+        async () => {
+          await this.lockOperatorCanPay((amount * BigInt(days === 200 ? 1000 : 500)) / 10_000n);
+          await this.precheck(() => this.lockRpc.lock.staticCall(amount, days, { from }));
+          return l.lock(amount, days);
+        },
+      ],
+      on,
+    );
+  }
+
+  async lockClaim(steps: Step[], on: OnSteps): Promise<boolean> {
+    if (!this.lock) throw new Error("锁仓暂未开放");
+    const s = await this.signer();
+    const from = await s.getAddress();
+    const l = new E.Contract(this.lock.target, LOCK_ABI, s);
+    return this.runSteps(
+      steps,
+      [
+        async () => {
+          await this.precheck(() => this.lockRpc.claim.staticCall({ from }));
+          return l.claim();
+        },
+      ],
+      on,
+    );
+  }
+
+  async lockAdmin(action: LockAdminAction, arg: bigint, steps: Step[], on: OnSteps): Promise<boolean> {
+    if (!this.lock) throw new Error("锁仓暂未开放");
+    const s = await this.signer();
+    const l = new E.Contract(this.lock.target, LOCK_ABI, s);
+    const fn = {
+      threshold: () => l.setThresholdUsd(arg),
+      pause: () => l.setPaused(true),
+      resume: () => l.setPaused(false),
+      approve: () => new E.Contract(this.addr.reward, ERC20_ABI, s).approve(this.lock.target, arg),
+    }[action];
+    return this.runSteps(steps, [fn], on);
+  }
+
+  private async lockQueryLogs(filter: any, start: number, end: number): Promise<any[]> {
+    try {
+      return await this.lock.queryFilter(filter, start, end);
+    } catch (e) {
+      if (this.lockRpc === this.lock) throw e;
+      return await this.lockRpc.queryFilter(filter, start, end);
+    }
+  }
+
+  private async lockRecords(account: string, toBlock: number, span: number): Promise<{ items: Rec[]; nextTo: number | null }> {
+    const base = this.cfg.lockDeployBlock || 0;
+    if (!this.lock) return { items: [], nextTo: null };
+    const from = Math.max(base, toBlock - span + 1);
+    const f = this.lock.filters;
+    const scan = async (flt: any) => {
+      const out: any[] = [];
+      for (let end = toBlock; end >= from; end -= this.cfg.logChunk) out.push(...(await this.lockQueryLogs(flt, Math.max(from, end - this.cfg.logChunk + 1), end)));
+      return out;
+    };
+    const [locked, claimed, ref, bought] = await Promise.all([scan(f.Locked(account)), scan(f.Claimed(account)), scan(f.RefRewardPaid(null, account)), scan(f.Bought(account))]);
+    const buys = new Map<string, any>(bought.map((b: any) => [b.transactionHash, b.args]));
+    const logs = [...locked, ...claimed, ...ref].sort((x, y) => y.blockNumber - x.blockNumber || y.index - x.index);
+    const times = new Map<number, number>();
+    await Promise.all([...new Set(logs.map((l) => l.blockNumber))].map(async (n) => times.set(n, (await this.read.getBlock(n))?.timestamp ?? 0)));
+    const d = this.dec;
+    const items: Rec[] = logs.map((l) => {
+      const a = l.args;
+      const time = times.get(l.blockNumber) || 0;
+      const base = { kind: "lock" as RecKind, time, tx: l.transactionHash, status: "已完成" as const };
+      if (l.fragment.name === "Locked") {
+        const b = buys.get(l.transactionHash);
+        const lines = [{ label: "锁仓", value: `${fmtUnits(a.amount, d.reward)} 喜羊羊` }];
+        if (b) lines.push({ label: "用 USDT 买入", value: `${fmtUnits(b.usdtIn, d.usdt)} USDT${b.toWallet > 0n ? `，${fmtUnits(b.toWallet, d.reward)} 喜羊羊到钱包` : ""}` });
+        lines.push({ label: "锁仓额度", value: `${fmtUnits(a.usdValue, 18)} USDT` });
+        lines.push({ label: "立即到账奖励", value: `${fmtUnits(a.reward, d.reward)} 喜羊羊` });
+        return { ...base, title: `锁仓 · ${Number(a.days_)} 天`, sign: "-", lines } as Rec;
+      }
+      if (l.fragment.name === "Claimed") return { ...base, title: "领取锁仓释放", sign: "+", lines: [{ label: "到账", value: `${fmtUnits(a.amount, d.reward)} 喜羊羊` }] } as Rec;
+      const g = Number(a.generation);
+      return {
+        ...base,
+        title: `锁仓推荐奖励 · ${g === 1 ? "直推" : g === 2 ? "间推（顺延）" : "第 3 代（顺延）"}`,
+        sign: "+",
+        lines: [
+          { label: "到账", value: `${fmtUnits(a.amount, d.reward)} 喜羊羊` },
+          { label: "来源", value: short(a.from) },
+        ],
+      } as Rec;
+    });
+    return { items, nextTo: from > base ? from - 1 : null };
   }
 
   /** previous contract: only used if it sits on the same pool, position manager and reward token */
@@ -739,6 +960,7 @@ export class ChainBackend {
   }
 
   async records(account: string, kind: RecKind, toBlock: number, span: number): Promise<{ items: Rec[]; nextTo: number | null }> {
+    if (kind === "lock") return this.lockRecords(account, toBlock, span);
     const from = Math.max(this.cfg.deployBlock, toBlock - span + 1);
     const f = this.miner.filters;
     let logs: any[] = [];
@@ -864,11 +1086,12 @@ export class ChainBackend {
   }
 }
 
-const MINER_IFACE = new E.Interface(MINER_ABI);
+const MINER_IFACE = new E.Interface([...MINER_ABI, ...LOCK_ABI.filter((x) => x.startsWith("error ") && !MINER_ABI.includes(x))]);
 
 const RULE_ERRORS = new Set([
   "BadReferrer", "AlreadyBound", "ZeroAmount", "ClaimPaused", "Ended", "PriceUnstable", "Slippage", "Expired",
   "NotRunning", "RewardPriceUnavailable", "FeeOnTransfer", "NothingToClaim", "TooMuchLiquidity",
+  "Paused", "BadPlan", "BadAmount", "PriceUnavailable", "OperatorCannotLock",
 ]);
 
 export function humanError(e: any): string {
@@ -881,6 +1104,12 @@ export function humanError(e: any): string {
     } catch {}
   }
   if (e?.revert?.name) m = e.revert.name + " " + m;
+  if (/OperatorShort/.test(m)) return "暂时无法锁仓，请稍后再试";
+  if (/OperatorCannotLock/.test(m)) return "运营钱包不能锁仓";
+  if (/BadPlan/.test(m)) return "锁仓方案无效";
+  if (/BadAmount/.test(m)) return "数量无效，或暂时没有可领取的喜羊羊";
+  if (/PriceUnavailable/.test(m)) return "请稍后再试";
+  if (/(^|[^A-Za-z])Paused/.test(m)) return "锁仓暂时关闭（管理员已暂停新锁仓），已锁仓的照常释放和领取";
   if (/BadReferrer/.test(m)) return "推荐人还没有入过金，暂时不能绑定（推荐人必须先入金，且不能是自己）";
   if (/AlreadyBound/.test(m)) return "已绑定过推荐人，不能修改";
   if (/ZeroAmount/.test(m)) return "数量无效";

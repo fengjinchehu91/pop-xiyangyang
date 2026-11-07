@@ -2,12 +2,12 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { AppConfig } from "./config";
 import { ChainBackend, humanError, switchChain, walletAccounts, walletChainId } from "./chain";
 import { DemoBackend } from "./demo";
-import type { AddQuote, AdminEvent, AdminUserRow, Downline, ExitQuote, Rec, RecKind, Snapshot, Step, TeamStats } from "./types";
+import type { AddQuote, AdminEvent, AdminUserRow, Downline, ExitQuote, LockView, Rec, RecKind, Snapshot, Step, TeamStats } from "./types";
 import { REASON_TEXT } from "./types";
 import { applySlippage, E18, fmtTime, fmtUnits, parseUnitsSafe, short, usdToToken } from "./fmt";
 
 type Backend = ChainBackend | DemoBackend;
-type Page = "mine" | "refer" | "records" | "admin";
+type Page = "mine" | "lock" | "refer" | "records" | "admin";
 type SheetKind = null | "add" | "exit" | "claim" | "rules" | "old";
 
 /** basis points -> "1%" / "0.5%" */
@@ -164,15 +164,17 @@ export default function App({ cfg }: { cfg: AppConfig }) {
           {snap && page === "mine" && (
             <MinePage cfg={cfg} snap={snap} live={live} account={account} canTx={canTx} onConnect={connect} open={setSheet} goRefer={() => setPage("refer")} />
           )}
+          {snap && page === "lock" && <LockPage cfg={cfg} snap={snap} account={account} backend={backend} canTx={canTx} onConnect={connect} />}
           {snap && page === "refer" && <ReferPage cfg={cfg} snap={snap} live={live} account={account} backend={backend} onConnect={connect} toast={setToast} />}
           {snap && page === "records" && <RecordsPage cfg={cfg} account={account} backend={backend} onConnect={connect} />}
-          {snap && page === "admin" && showAdmin && <AdminPage cfg={cfg} snap={snap} backend={backend} demo={demo} isAdmin={isAdmin} refresh={refresh} />}
+          {snap && page === "admin" && showAdmin && <AdminPage cfg={cfg} snap={snap} backend={backend} demo={demo} isAdmin={isAdmin} adminAccount={account} refresh={refresh} />}
         </main>
 
         <nav className="tabbar">
           {(
             [
               ["mine", "挖矿", IconPick],
+              ["lock", "锁仓", IconLock],
               ["refer", "推荐", IconUsers],
               ["records", "记录", IconDoc],
             ] as const
@@ -365,6 +367,319 @@ function OldSheet({ snap, backend, canTx, close, done }: { snap: Snapshot; backe
         </button>
       )}
     </Sheet>
+  );
+}
+
+// ------------------------------------------------------------------ 锁仓
+const LOCK_SLIP_BPS = 500; // USDT 买入并锁仓：滑点保护 5%
+const LOCK_PLANS = [
+  { days: 100, release: "1%", bps: 500, label: "每天释放 1% · 奖励 5%" },
+  { days: 200, release: "0.5%", bps: 1000, label: "每天释放 0.5% · 奖励 10%" },
+] as const;
+
+/** 锁仓 contract state for this wallet; refreshed every 15 s. [view, reload]; view null = 锁仓 not available */
+function useLockView(backend: Backend, account: string): [LockView | null | undefined, () => void] {
+  const [v, setV] = useState<LockView | null | undefined>(undefined);
+  const [n, setN] = useState(0);
+  useEffect(() => {
+    let off = false;
+    const get = () => backend.lockView(account).then((x) => !off && setV(x), () => {});
+    get();
+    const id = setInterval(get, 15_000);
+    return () => {
+      off = true;
+      clearInterval(id);
+    };
+  }, [backend, account, n]);
+  return [v, () => setN((x) => x + 1)];
+}
+
+function LockPage({ cfg, snap, account, backend, canTx, onConnect }: { cfg: AppConfig; snap: Snapshot; account: string; backend: Backend; canTx: boolean; onConnect: () => void }) {
+  void cfg;
+  const [v, reload] = useLockView(backend, account);
+  const [mode, setMode] = useState<"usdt" | "wallet">("usdt");
+  const [days, setDays] = useState<100 | 200>(100);
+  const [ratio, setRatio] = useState<10000 | 8000>(10000);
+  const [amtStr, setAmtStr] = useState("");
+  const [quote, setQuote] = useState<{ key: string; out: bigint; usd: bigint } | null>(null);
+  const [steps, setSteps] = useState<Step[] | null>(null);
+  const [claimSteps, setClaimSteps] = useState<Step[] | null>(null);
+  const [running, setRunning] = useState(false);
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, []);
+  const rd = snap.rewardDecimals;
+  const ud = snap.usdtDecimals;
+  const amt = parseUnitsSafe(amtStr, mode === "usdt" ? ud : rd);
+  const key = `${mode}:${amt ?? ""}`;
+  useEffect(() => {
+    setQuote(null);
+    if (!amt || amt <= 0n) return;
+    let off = false;
+    const t = setTimeout(() => {
+      (mode === "usdt"
+        ? backend.lockQuote(amt).then((out) => ({ key, out, usd: amt * 10n ** BigInt(18 - ud) }))
+        : backend.lockValue(amt).then((usd) => ({ key, out: amt, usd }))
+      ).then((q) => !off && setQuote(q), () => {});
+    }, 400);
+    return () => {
+      off = true;
+      clearTimeout(t);
+    };
+  }, [backend, key]);
+  if (v === undefined) return <Loading />;
+  if (v === null)
+    return (
+      <>
+        <Hero title="锁仓" sub="锁仓喜羊羊，每天释放，锁仓即得奖励" img={A("sheep-safe.png")} />
+        <div className="card center"><p className="muted">锁仓即将开放，敬请期待</p></div>
+      </>
+    );
+  const me = v.me;
+  const plan = LOCK_PLANS.find((p) => p.days === days)!;
+  const q = quote && quote.key === key ? quote : null;
+  const lockedAmt = q ? (mode === "usdt" ? (q.out * BigInt(ratio)) / 10000n : q.out) : null;
+  const quotaUsd = q ? (mode === "usdt" ? (q.usd * BigInt(ratio)) / 10000n : q.usd) : null;
+  const reward = lockedAmt !== null ? (lockedAmt * BigInt(plan.bps)) / 10000n : null;
+  const daily = lockedAmt !== null ? lockedAmt / BigInt(days) : null;
+  const bal = me ? (mode === "usdt" ? me.usdt : me.reward) : null;
+  const over = amt !== null && bal !== null && amt > bal;
+  const thr = usd0(v.thresholdUsd);
+  const minePct = me ? (me.rightsReached ? 100 : Number((me.lockedUsd * 100n) / (v.thresholdUsd || 1n))) : 0; // rights are permanent
+  const go = async () => {
+    if (!amt || amt <= 0n) return;
+    const s: Step[] =
+      mode === "usdt"
+        ? [{ label: "授权 USDT（按本次金额）", status: "idle" }, { label: `买入并锁仓 ${days} 天`, status: "idle" }]
+        : [{ label: "授权喜羊羊（按本次数量）", status: "idle" }, { label: `锁仓 ${days} 天`, status: "idle" }];
+    const cur = steps?.some((x) => x.status === "error") ? steps.map((x) => (x.status === "error" ? { ...x, status: "idle" as const, error: undefined } : x)) : s;
+    setSteps(cur);
+    setRunning(true);
+    try {
+      const ok = mode === "usdt" ? await backend.lockBuy(amt, ratio, days, LOCK_SLIP_BPS, cur, setSteps) : await backend.lockWallet(amt, days, cur, setSteps);
+      if (ok) setAmtStr("");
+    } catch (e) {
+      // only the step that was about to run shows the reason
+      setSteps((p) => {
+        if (!p) return p;
+        const i = p.findIndex((x) => x.status === "idle" || x.status === "wallet");
+        return p.map((x, j) => (j === i ? { ...x, status: "error", error: humanError(e) } : x));
+      });
+    } finally {
+      setRunning(false);
+      reload();
+    }
+  };
+  const claim = async () => {
+    const s: Step[] = [{ label: "领取已释放的喜羊羊", status: "idle" }];
+    setClaimSteps(s);
+    try {
+      await backend.lockClaim(s, setClaimSteps);
+    } catch (e) {
+      setClaimSteps([{ ...s[0], status: "error", error: humanError(e) }]);
+    } finally {
+      reload();
+    }
+  };
+  const done = !!steps && steps.every((x) => x.status === "done" || x.status === "skipped");
+  return (
+    <>
+      <Hero title="锁仓" sub="锁仓喜羊羊，每天释放，锁仓即得奖励" img={A("sheep-safe.png")} />
+
+      {me && (
+        <section className="card lock-rights">
+          <div className="row-sb">
+            <b>推荐资格</b>
+            <span className={"pill " + (me.canRefer ? "ok" : "no")}>{me.canRefer ? "已开通" : me.rightsReached ? "挖矿入金额度不足" : "未开通"}</span>
+          </div>
+          <div className="kv">
+            <div>
+              <span>累计锁仓额度</span>
+              <b>{fmtUnits(me.lockedUsd, 18)} / {thr} USDT{me.rightsReached ? " ✓" : ""}</b>
+            </div>
+            <div>
+              <span>挖矿入金额度 ≥ {usd0(snap.params.thresholdUsd)} USDT</span>
+              <b className={me.miningEligible ? "ok-t" : "err"}>{me.miningEligible ? "已满足" : "未满足"}</b>
+            </div>
+          </div>
+          <div className="bar"><i style={{ width: `${Math.min(100, minePct)}%` }} /></div>
+          <p className="fine">累计锁仓额度达到 {thr} USDT 即永久开通（同时挖矿入金额度需 ≥ {usd0(snap.params.thresholdUsd)} USDT）。下级锁仓时，您可拿 5% 或 10% 推荐奖励；您没开通时会往上顺延，最多 3 代。</p>
+        </section>
+      )}
+
+      <section className="card lock-form">
+        <div className="seg">
+          <button className={mode === "usdt" ? "on" : ""} onClick={() => { setMode("usdt"); setAmtStr(""); setSteps(null); }}>USDT 买入并锁仓</button>
+          <button className={mode === "wallet" ? "on" : ""} onClick={() => { setMode("wallet"); setAmtStr(""); setSteps(null); }}>锁仓钱包里的喜羊羊</button>
+        </div>
+        <div className="lbl">选择方案</div>
+        <div className="opt2">
+          {LOCK_PLANS.map((p) => (
+            <button key={p.days} className={days === p.days ? "on" : ""} onClick={() => setDays(p.days)}>
+              <b>{p.days} 天</b>
+              <span>{p.label}</span>
+            </button>
+          ))}
+        </div>
+        <div className="lbl row-sb">
+          <span>{mode === "usdt" ? "买入金额（USDT）" : "锁仓数量（喜羊羊）"}</span>
+          {bal !== null && <span className="muted">余额 {fmtUnits(bal, mode === "usdt" ? ud : rd)}</span>}
+        </div>
+        <div className="inp-row">
+          <input inputMode="decimal" placeholder="0.00" value={amtStr} onChange={(e) => setAmtStr(e.target.value.replace(/[^0-9.]/g, ""))} />
+          {bal !== null && (
+            <button className="btn-mini" onClick={() => setAmtStr(fmtUnits(bal, mode === "usdt" ? ud : rd, 6).replace(/,/g, ""))}>全部</button>
+          )}
+        </div>
+        {mode === "usdt" && (
+          <>
+            <div className="lbl">锁仓比例</div>
+            <div className="opt2">
+              <button className={ratio === 10000 ? "on" : ""} onClick={() => setRatio(10000)}>
+                <b>100% 锁仓</b>
+              </button>
+              <button className={ratio === 8000 ? "on" : ""} onClick={() => setRatio(8000)}>
+                <b>80% 锁仓</b>
+                <span>20% 到钱包</span>
+              </button>
+            </div>
+          </>
+        )}
+        <div className="kv lock-sum">
+          {mode === "usdt" && (
+            <div>
+              <span>预计买到</span>
+              <b>{q ? fmtUnits(q.out, rd) : "—"} 喜羊羊</b>
+            </div>
+          )}
+          <div>
+            <span>锁仓</span>
+            <b>{lockedAmt !== null ? fmtUnits(lockedAmt, rd) : "—"} 喜羊羊</b>
+          </div>
+          {mode === "usdt" && ratio !== 10000 && (
+            <div>
+              <span>直接到钱包</span>
+              <b>{q && lockedAmt !== null ? fmtUnits(q.out - lockedAmt, rd) : "—"} 喜羊羊</b>
+            </div>
+          )}
+          <div>
+            <span>这笔锁仓额度</span>
+            <b>{quotaUsd !== null ? fmtUnits(quotaUsd, 18) : "—"} USDT</b>
+          </div>
+          <div>
+            <span>立即到账奖励</span>
+            <b className="ok-t">+{reward !== null ? fmtUnits(reward, rd) : "—"} 喜羊羊</b>
+          </div>
+          <div>
+            <span>每天释放</span>
+            <b>{daily !== null ? fmtUnits(daily, rd) : "—"} 喜羊羊 × {days} 次</b>
+          </div>
+        </div>
+        <p className="fine">
+          {mode === "usdt" ? `买入滑点保护 ${LOCK_SLIP_BPS / 100}%。` : "锁仓额度按锁仓那一刻的喜羊羊价格折算。"}锁仓后每满 24 小时释放一次，不能提前解锁。
+        </p>
+        {v.paused && <div className="alert">锁仓暂时关闭（管理员已暂停新锁仓），已锁仓的照常释放和领取。</div>}
+        {steps && <Steps steps={steps} />}
+        {!account ? (
+          <button className="btn-gold wide" onClick={onConnect}>连接钱包</button>
+        ) : done ? (
+          <button className="btn-green wide" onClick={() => setSteps(null)}>完成</button>
+        ) : (
+          <button className="btn-green wide" disabled={!canTx || running || v.paused || !amt || amt <= 0n || over || !q} onClick={go}>
+            {running ? "处理中…" : over ? "余额不足" : steps?.some((x) => x.status === "error") ? "重试" : mode === "usdt" ? "买入并锁仓" : "确认锁仓"}
+          </button>
+        )}
+      </section>
+
+      {me && (
+        <>
+          <section className="card lock-mine">
+            <div className="kv">
+              <div>
+                <span>锁仓中（未释放）</span>
+                <b>{fmtUnits(me.stillLocked, rd)} 喜羊羊</b>
+              </div>
+              <div>
+                <span>可领取</span>
+                <b className="ok-t">{fmtUnits(me.claimable, rd)} 喜羊羊</b>
+              </div>
+            </div>
+            {claimSteps && <Steps steps={claimSteps} />}
+            <button className="btn-gold wide" disabled={!canTx || me.claimable === 0n || claimSteps?.some((x) => x.status === "wallet" || x.status === "pending")} onClick={claim}>
+              领取已释放的喜羊羊
+            </button>
+          </section>
+          {me.locks.map((l) => {
+            // the phone's clock can be a little behind the chain: never below 0
+            const periods = Math.max(0, Math.min(l.days, Math.floor((now / 1000 - l.start) / 86400)));
+            const next = l.start + (periods + 1) * 86400;
+            return (
+              <section className="card lock-item" key={l.id}>
+                <div className="row-sb">
+                  <b>{l.days} 天 · {fmtUnits(l.amount, rd)} 喜羊羊</b>
+                  <span className="muted">{fmtTime(l.start).slice(5, 10)} 锁仓</span>
+                </div>
+                <div className="bar"><i style={{ width: `${(periods / l.days) * 100}%` }} /></div>
+                <div className="row-sb fine">
+                  <span>已释放 {periods} / {l.days} 次</span>
+                  <span>{periods >= l.days ? "已全部释放" : `下次释放 ${fmtTime(next).slice(5, 16)}`}</span>
+                </div>
+              </section>
+            );
+          })}
+        </>
+      )}
+    </>
+  );
+}
+
+/** admin: 锁仓 contract */
+function LockAdminCard({ snap, backend, account, demo }: { snap: Snapshot; backend: Backend; account: string; demo: boolean }) {
+  const [v, reload] = useLockView(backend, "");
+  const [thr, setThr] = useState("");
+  const [amt, setAmt] = useState("");
+  const [steps, setSteps] = useState<Step[] | null>(null);
+  if (!v) return null;
+  const rd = snap.rewardDecimals;
+  const can = demo || (!!account && v.owner.toLowerCase() === account.toLowerCase());
+  const act = async (a: "threshold" | "pause" | "resume" | "approve", arg: bigint, label: string) => {
+    const st: Step[] = [{ label, status: "idle" }];
+    setSteps(st);
+    try {
+      if (await backend.lockAdmin(a, arg, st, setSteps)) reload();
+    } catch (e) {
+      setSteps([{ ...st[0], status: "error", error: humanError(e) }]);
+    }
+  };
+  const thrV = parseUnitsSafe(thr, 18);
+  const amtV = parseUnitsSafe(amt, rd);
+  return (
+    <section className="card btn-col">
+      <b>锁仓</b>
+      <div className="kv">
+        <div><span>总锁仓（合约里还有）</span><b>{fmtUnits(v.totals.locked - v.totals.claimed, rd)} 喜羊羊</b></div>
+        <div><span>已发奖励（自己 + 推荐）</span><b>{fmtUnits(v.totals.ownReward + v.totals.refReward, rd)} 喜羊羊</b></div>
+        <div><span>没人领、留在运营钱包的推荐奖励</span><b>{fmtUnits(v.totals.refUnpaid, rd)} 喜羊羊</b></div>
+        <div><span>给锁仓合约的剩余授权</span><b>{fmtUnits(v.operator.allowance, rd)} 喜羊羊</b></div>
+        <div><span>运营钱包喜羊羊余额</span><b>{fmtUnits(v.operator.balance, rd)} 喜羊羊</b></div>
+        <div><span>状态</span><b className={v.paused ? "err" : "ok-t"}>{v.paused ? "已暂停新锁仓" : "正常锁仓中"}</b></div>
+        <div><span>推荐资格门槛</span><b>{usd0(v.thresholdUsd)} USDT</b></div>
+      </div>
+      <label className="inp"><span>推荐资格门槛（累计锁仓额度，USDT）</span><input inputMode="decimal" placeholder={fmtUnits(v.thresholdUsd, 18, 0).replace(/,/g, "")} value={thr} onChange={(e) => setThr(e.target.value)} /></label>
+      <button className="btn-line wide" disabled={!can || !thrV} onClick={() => thrV && act("threshold", thrV, `推荐资格门槛改为 ${thr} USDT`)}>保存门槛</button>
+      <p className="fine">已经开通推荐资格的钱包不受影响；门槛调低后，累计锁仓额度够了的钱包自动开通。</p>
+      {v.paused ? (
+        <button className="btn-line wide" disabled={!can} onClick={() => act("resume", 0n, "恢复新锁仓")}>恢复新锁仓</button>
+      ) : (
+        <button className="btn-line wide danger" disabled={!can} onClick={() => act("pause", 0n, "暂停新锁仓")}>暂停新锁仓（已锁仓的照常释放和领取）</button>
+      )}
+      <label className="inp"><span>给锁仓合约授权的喜羊羊数量（固定额度，会替换当前授权）</span><input inputMode="decimal" placeholder="例如 5000000" value={amt} onChange={(e) => setAmt(e.target.value)} /></label>
+      <button className="btn-gold wide" disabled={!can || !amtV} onClick={() => amtV && act("approve", amtV, `授权锁仓合约 ${amt} 喜羊羊`)}>授权 / 补充授权</button>
+      <p className="fine">锁仓那一刻，合约从运营钱包发奖励（自己 5%/10% + 推荐 5%/10%）。授权或余额不够时，那一笔锁仓不会成功。</p>
+      {steps && <Steps steps={steps} />}
+    </section>
   );
 }
 
@@ -706,6 +1021,7 @@ function ReferPage({ cfg, snap, live, account, backend, onConnect, toast }: { cf
     load();
   }, [load]);
   const team = useTeam(backend, account);
+  const [lockV] = useLockView(backend, account);
 
   if (!account)
     return (
@@ -800,6 +1116,15 @@ function ReferPage({ cfg, snap, live, account, backend, onConnect, toast }: { cf
         </div>
         <div className="fine-light">累计实际领取动态：{fmtUnits(u?.claimedDynamic ?? 0n, snap.rewardDecimals)} 喜羊羊 · 下级结算后入账</div>
       </section>
+      {lockV?.me && (
+        <section className="card kv lock-ref">
+          <div>
+            <span>锁仓推荐奖励累计</span>
+            <b>{fmtUnits(lockV.me.refReward, snap.rewardDecimals)} 喜羊羊</b>
+          </div>
+          <p className="fine">下级锁仓时直接到账，不用领取。</p>
+        </section>
+      )}
 
       <div className="seg">
         <button className={tab === "direct" ? "on" : ""} onClick={() => setTab("direct")}>
@@ -887,13 +1212,14 @@ function RecordsPage({ cfg, account, backend, onConnect }: { cfg: AppConfig; acc
     );
   return (
     <>
-      <Hero title="记录" sub="查看流动性、领取及动态奖励记录（来自链上事件）" img={A("sheep-thumb.png")} />
-      <div className="seg three">
+      <Hero title="记录" sub="查看流动性、领取、动态奖励及锁仓记录（来自链上事件）" img={A("sheep-thumb.png")} />
+      <div className="seg four rec-tabs">
         {(
           [
             ["liquidity", "流动性"],
             ["claim", "领取"],
             ["dynamic", "动态奖励"],
+            ["lock", "锁仓"],
           ] as const
         ).map(([k, l]) => (
           <button key={k} className={kind === k ? "on" : ""} onClick={() => setKind(k)}>
@@ -911,7 +1237,7 @@ function RecordsPage({ cfg, account, backend, onConnect }: { cfg: AppConfig; acc
         {items && items.length === 0 && <div className="center muted">暂无记录（仅显示最近区块范围，可加载更早）</div>}
         {items?.map((r, i) => (
           <div className="li rec" key={r.tx + i}>
-            <div className={"rec-ic " + (r.sign === "-" ? "out" : "in")}>{r.kind === "claim" ? "🎁" : r.sign === "-" ? "−" : "+"}</div>
+            <div className={"rec-ic " + (r.sign === "-" ? "out" : "in")}>{r.kind === "claim" ? "🎁" : r.kind === "lock" && r.sign === "-" ? "🔒" : r.sign === "-" ? "−" : "+"}</div>
             <div className="grow">
               <b>{r.title}</b>
               {r.lines.map((l) => (
@@ -1435,7 +1761,7 @@ function KeeperCard({ cfg }: { cfg: AppConfig }) {
   );
 }
 
-function AdminPage({ cfg, snap, backend, demo, isAdmin, refresh }: { cfg: AppConfig; snap: Snapshot; backend: Backend; demo: boolean; isAdmin: boolean; refresh: () => void }) {
+function AdminPage({ cfg, snap, backend, demo, isAdmin, adminAccount, refresh }: { cfg: AppConfig; snap: Snapshot; backend: Backend; demo: boolean; isAdmin: boolean; adminAccount: string; refresh: () => void }) {
   const can = isAdmin || demo;
   const pr = snap.params;
   const [amt, setAmt] = useState("");
@@ -1533,6 +1859,7 @@ function AdminPage({ cfg, snap, backend, demo, isAdmin, refresh }: { cfg: AppCon
       <StatusLine snap={snap} force />
 
       <KeeperCard cfg={cfg} />
+      <LockAdminCard snap={snap} backend={backend} account={adminAccount} demo={demo} />
 
       <section className="card btn-col">
         <b>运行控制</b>
@@ -1803,6 +2130,9 @@ function IconUsers() {
 }
 function IconUser() {
   return (<svg {...sv}><circle cx="12" cy="8" r="4" /><path d="M4 21c1-4 4.2-6 8-6s7 2 8 6" /></svg>);
+}
+function IconLock() {
+  return (<svg {...sv}><rect x="5" y="10" width="14" height="11" rx="2" /><path d="M8 10V7a4 4 0 018 0v3M12 14v3" /></svg>);
 }
 function IconDoc() {
   return (<svg {...sv}><rect x="5" y="3" width="14" height="18" rx="2" /><path d="M9 8h6M9 12h6M9 16h4" /></svg>);

@@ -97,7 +97,7 @@ export interface OldStatus {
   rewardPrice: bigint | null;
 }
 
-export type RecKind = "liquidity" | "claim" | "dynamic";
+export type RecKind = "liquidity" | "claim" | "dynamic" | "lock";
 
 export interface Rec {
   kind: RecKind;
@@ -107,6 +107,38 @@ export interface Rec {
   tx: string;
   status: "已完成";
   sign?: "+" | "-";
+}
+
+/** one lock: `days_` = 100 or 200; one release every 24 h after `start` */
+export interface LockItem {
+  id: number;
+  amount: bigint;
+  claimed: bigint;
+  start: number;
+  days: number;
+}
+
+/** 锁仓 contract state, and this wallet in it */
+export interface LockView {
+  address: string;
+  paused: boolean;
+  thresholdUsd: bigint;
+  owner: string;
+  totals: { locked: bigint; claimed: bigint; ownReward: bigint; refReward: bigint; refUnpaid: bigint };
+  operator: { allowance: bigint; balance: bigint };
+  me: null | {
+    lockedUsd: bigint; // 累计锁仓额度 (18-dec USD)
+    rightsReached: boolean; // 累计锁仓额度 reached the threshold (permanent)
+    canRefer: boolean; // + eligible in mining now
+    miningEligible: boolean;
+    stillLocked: bigint;
+    claimable: bigint;
+    ownReward: bigint;
+    refReward: bigint;
+    locks: LockItem[]; // newest first
+    usdt: bigint; // wallet balances
+    reward: bigint;
+  };
 }
 
 /** a wallet's whole team (every level below it, wallets that have added liquidity, excluding itself) */

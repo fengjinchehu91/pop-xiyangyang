@@ -9,6 +9,8 @@ export interface AppConfig {
   miner: string; // empty = not deployed / not configured
   oldMiner: string; // previous mining contract: users only withdraw and claim there (empty = none)
   oldDeployBlock: number; // block the previous contract was deployed in (admin: list its wallets)
+  lock: string; // 锁仓 contract (empty = 锁仓 not available yet)
+  lockDeployBlock: number;
   pool: string;
   pop: string;
   usdt: string;
@@ -29,6 +31,8 @@ export const DEFAULTS: AppConfig = {
   miner: "",
   oldMiner: "",
   oldDeployBlock: 0,
+  lock: "",
+  lockDeployBlock: 0,
   pool: "0xE5ce5bc4785CD2a246151364f5A190ceE3FDb142",
   pop: "0xA3cfB853339b77F385B994799B015cB04b208Fe6",
   usdt: "", // filled from the pool on-chain (token0/token1 other than POP); never hard-assumed

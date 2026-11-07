@@ -173,7 +173,7 @@ a { color: var(--g6); }
 .rules-mini p { margin-top: 4px; }
 
 /* tabbar */
-.tabbar { position: fixed; bottom: 0; left: 50%; transform: translateX(-50%); width: 100%; max-width: 480px; z-index: 30; display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; padding: 8px 14px calc(8px + var(--safe-b)); background: rgba(251, 247, 239, 0.97); border-top: 1px solid var(--line); backdrop-filter: blur(8px); }
+.tabbar { position: fixed; bottom: 0; left: 50%; transform: translateX(-50%); width: 100%; max-width: 480px; z-index: 30; display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; padding: 8px 10px calc(8px + var(--safe-b)); background: rgba(251, 247, 239, 0.97); border-top: 1px solid var(--line); backdrop-filter: blur(8px); }
 .tab { min-height: 52px; border: 0; border-radius: 14px; background: transparent; color: var(--ink); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; font-size: 14px; font-weight: 800; }
 .tab.on { background: linear-gradient(180deg, var(--g6), var(--g8)); color: #fff; }
 @media (min-width: 600px) { .tabbar { bottom: 24px; border-radius: 0 0 24px 24px; } }
@@ -290,3 +290,23 @@ a { color: var(--g6); }
 .old-pool > .fine { margin: 4px 0 6px; }
 .old-pool .kv { margin-bottom: 4px; }
 .gate .old-pool { margin-top: 12px; }
+
+/* 锁仓 */
+.seg.four.rec-tabs { margin: 14px 16px 0; }
+.lock-form .seg { margin: 0 0 4px; }
+.lock-form .lbl { font-size: 14px; color: var(--muted); margin: 12px 0 6px; font-weight: 600; }
+.opt2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.opt2 button { min-height: 56px; border-radius: 14px; border: 1.5px solid var(--line); background: #fff; color: var(--ink); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; padding: 6px; }
+.opt2 button b { font-size: 16px; }
+.opt2 button span { font-size: 12px; color: var(--muted); }
+.opt2 button.on { border-color: var(--g6); background: var(--g1); }
+.opt2 button.on b { color: var(--g8); }
+.lock-sum { margin-top: 14px; }
+.bar { height: 8px; border-radius: 4px; background: var(--cream2); overflow: hidden; margin: 8px 0 6px; }
+.bar i { display: block; height: 100%; background: linear-gradient(90deg, var(--g6), var(--g8)); }
+.lock-rights .row-sb b { font-size: 16px; }
+.lock-rights .kv { margin-top: 6px; }
+.lock-item { padding: 14px 18px; }
+.lock-item .fine { margin: 0; }
+.lock-ref .fine { margin: 6px 0 0; }
+.lock-form .btn-green.wide, .lock-form .btn-gold.wide, .lock-mine .btn-gold.wide { margin-top: 12px; }
