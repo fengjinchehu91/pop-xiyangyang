@@ -640,8 +640,9 @@ function LockPage({ cfg, snap, account, backend, canTx, onConnect }: { cfg: AppC
 }
 
 /** admin: 锁仓 contract */
-function LockAdminCard({ snap, backend, account, demo }: { snap: Snapshot; backend: Backend; account: string; demo: boolean }) {
+function LockAdminCard({ snap, backend, account, demo, explorer }: { snap: Snapshot; backend: Backend; account: string; demo: boolean; explorer: string }) {
   const [v, reload] = useLockView(backend, "");
+  const [copied, setCopied] = useState(false);
   const [thr, setThr] = useState("");
   const [amt, setAmt] = useState("");
   const [steps, setSteps] = useState<Step[] | null>(null);
@@ -662,6 +663,20 @@ function LockAdminCard({ snap, backend, account, demo }: { snap: Snapshot; backe
   return (
     <section className="card btn-col">
       <b>锁仓</b>
+      <div className="lock-addr">
+        <span>锁仓合约</span>
+        <div className="row-sb">
+          <span className="mono addr-wrap">{v.address}</span>
+          <button className="btn-mini" onClick={() => navigator.clipboard?.writeText(v.address).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); })}>
+            {copied ? "已复制" : "复制"}
+          </button>
+        </div>
+        {explorer && (
+          <a href={`${explorer}/address/${v.address}`} target="_blank" rel="noreferrer">
+            在 BscScan 查看 ↗
+          </a>
+        )}
+      </div>
       <div className="kv">
         <div><span>总锁仓（合约里还有）</span><b>{fmtUnits(v.totals.locked - v.totals.claimed, rd)} 喜羊羊</b></div>
         <div><span>已发奖励（自己 + 推荐）</span><b>{fmtUnits(v.totals.ownReward + v.totals.refReward, rd)} 喜羊羊</b></div>
@@ -1878,7 +1893,7 @@ function AdminPage({ cfg, snap, backend, demo, isAdmin, adminAccount, refresh }:
       <StatusLine snap={snap} force />
 
       <KeeperCard cfg={cfg} />
-      <LockAdminCard snap={snap} backend={backend} account={adminAccount} demo={demo} />
+      <LockAdminCard snap={snap} backend={backend} account={adminAccount} demo={demo} explorer={cfg.explorer} />
 
       <section className="card btn-col">
         <b>运行控制</b>
