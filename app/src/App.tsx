@@ -548,36 +548,39 @@ function LockPage({ cfg, snap, account, backend, canTx, onConnect }: { cfg: AppC
             </div>
           </>
         )}
-        <div className="kv lock-sum">
-          {mode === "usdt" && (
+        {/* shown only once an amount is entered and the numbers are worked out */}
+        {q && (
+          <div className="kv lock-sum">
+            {mode === "usdt" && (
+              <div>
+                <span>预计买到</span>
+                <b>{q ? fmtUnits(q.out, rd) : "—"} 喜羊羊</b>
+              </div>
+            )}
             <div>
-              <span>预计买到</span>
-              <b>{q ? fmtUnits(q.out, rd) : "—"} 喜羊羊</b>
+              <span>锁仓</span>
+              <b>{lockedAmt !== null ? fmtUnits(lockedAmt, rd) : "—"} 喜羊羊</b>
             </div>
-          )}
-          <div>
-            <span>锁仓</span>
-            <b>{lockedAmt !== null ? fmtUnits(lockedAmt, rd) : "—"} 喜羊羊</b>
-          </div>
-          {mode === "usdt" && ratio !== 10000 && (
+            {mode === "usdt" && ratio !== 10000 && (
+              <div>
+                <span>直接到钱包</span>
+                <b>{q && lockedAmt !== null ? fmtUnits(q.out - lockedAmt, rd) : "—"} 喜羊羊</b>
+              </div>
+            )}
             <div>
-              <span>直接到钱包</span>
-              <b>{q && lockedAmt !== null ? fmtUnits(q.out - lockedAmt, rd) : "—"} 喜羊羊</b>
+              <span>这笔锁仓额度</span>
+              <b>{quotaUsd !== null ? fmtUnits(quotaUsd, 18) : "—"} USDT</b>
             </div>
-          )}
-          <div>
-            <span>这笔锁仓额度</span>
-            <b>{quotaUsd !== null ? fmtUnits(quotaUsd, 18) : "—"} USDT</b>
+            <div>
+              <span>立即到账奖励</span>
+              <b className="ok-t">+{reward !== null ? fmtUnits(reward, rd) : "—"} 喜羊羊</b>
+            </div>
+            <div>
+              <span>每天释放</span>
+              <b>{daily !== null ? fmtUnits(daily, rd) : "—"} 喜羊羊 × {days} 次</b>
+            </div>
           </div>
-          <div>
-            <span>立即到账奖励</span>
-            <b className="ok-t">+{reward !== null ? fmtUnits(reward, rd) : "—"} 喜羊羊</b>
-          </div>
-          <div>
-            <span>每天释放</span>
-            <b>{daily !== null ? fmtUnits(daily, rd) : "—"} 喜羊羊 × {days} 次</b>
-          </div>
-        </div>
+        )}
         <p className="fine">
           {mode === "usdt" ? `买入滑点保护 ${LOCK_SLIP_BPS / 100}%。` : "锁仓额度按锁仓那一刻的喜羊羊价格折算。"}锁仓后每满 24 小时释放一次，不能提前解锁。
         </p>
