@@ -671,18 +671,33 @@ function LockAdminCard({ snap, backend, account, demo }: { snap: Snapshot; backe
         <div><span>状态</span><b className={v.paused ? "err" : "ok-t"}>{v.paused ? "已暂停新锁仓" : "正常锁仓中"}</b></div>
         <div><span>推荐资格门槛</span><b>{usd0(v.thresholdUsd)} USDT</b></div>
       </div>
-      <label className="inp"><span>推荐资格门槛（累计锁仓额度，USDT）</span><input inputMode="decimal" placeholder={fmtUnits(v.thresholdUsd, 18, 0).replace(/,/g, "")} value={thr} onChange={(e) => setThr(e.target.value)} /></label>
-      <button className="btn-line wide" disabled={!can || !thrV} onClick={() => thrV && act("threshold", thrV, `推荐资格门槛改为 ${thr} USDT`)}>保存门槛</button>
-      <p className="fine">已经开通推荐资格的钱包不受影响；门槛调低后，累计锁仓额度够了的钱包自动开通。</p>
-      {v.paused ? (
-        <button className="btn-line wide" disabled={!can} onClick={() => act("resume", 0n, "恢复新锁仓")}>恢复新锁仓</button>
-      ) : (
-        <button className="btn-line wide danger" disabled={!can} onClick={() => act("pause", 0n, "暂停新锁仓")}>暂停新锁仓（已锁仓的照常释放和领取）</button>
-      )}
-      <label className="inp"><span>给锁仓合约授权的喜羊羊数量（固定额度，会替换当前授权）</span><input inputMode="decimal" placeholder="例如 5000000" value={amt} onChange={(e) => setAmt(e.target.value)} /></label>
-      <button className="btn-gold wide" disabled={!can || !amtV} onClick={() => amtV && act("approve", amtV, `授权锁仓合约 ${amt} 喜羊羊`)}>授权 / 补充授权</button>
-      <p className="fine">锁仓那一刻，合约从运营钱包发奖励（自己 5%/10% + 推荐 5%/10%）。授权或余额不够时，那一笔锁仓不会成功。</p>
+      <div className="adm-group">
+        <b>推荐资格门槛</b>
+        <div className="unit-in">
+          <input inputMode="decimal" placeholder={fmtUnits(v.thresholdUsd, 18, 0).replace(/,/g, "")} value={thr} onChange={(e) => setThr(e.target.value)} />
+          <em>USDT</em>
+        </div>
+        <button className="btn-line wide" disabled={!can || !thrV} onClick={() => thrV && act("threshold", thrV, `推荐资格门槛改为 ${thr} USDT`)}>保存门槛</button>
+        <p className="fine">按累计锁仓额度算。已经开通推荐资格的钱包不受影响；门槛调低后，累计锁仓额度够了的钱包自动开通。</p>
+      </div>
+      <div className="adm-group">
+        <b>给锁仓合约授权的喜羊羊数量</b>
+        <div className="unit-in">
+          <input inputMode="decimal" placeholder="例如 5000000" value={amt} onChange={(e) => setAmt(e.target.value)} />
+          <em>喜羊羊</em>
+        </div>
+        <button className="btn-gold wide" disabled={!can || !amtV} onClick={() => amtV && act("approve", amtV, `授权锁仓合约 ${amt} 喜羊羊`)}>授权 / 补充授权</button>
+        <p className="fine">固定额度，会替换当前授权。锁仓那一刻，合约从运营钱包发奖励（自己 5%/10% + 推荐 5%/10%）；授权或余额不够时，那一笔锁仓不会成功。</p>
+      </div>
       {steps && <Steps steps={steps} />}
+      <div className="adm-group">
+        {v.paused ? (
+          <button className="btn-line wide" disabled={!can} onClick={() => act("resume", 0n, "恢复新锁仓")}>恢复新锁仓</button>
+        ) : (
+          <button className="btn-line wide danger" disabled={!can} onClick={() => act("pause", 0n, "暂停新锁仓")}>暂停新锁仓</button>
+        )}
+        <p className="fine">{v.paused ? "现在不能新锁仓；已锁仓的照常释放和领取。" : "暂停后不能新锁仓；已锁仓的照常释放和领取。"}</p>
+      </div>
     </section>
   );
 }

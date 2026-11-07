@@ -310,3 +310,12 @@ a { color: var(--g6); }
 .lock-item .fine { margin: 0; }
 .lock-ref .fine { margin: 6px 0 0; }
 .lock-form .btn-green.wide, .lock-form .btn-gold.wide, .lock-mine .btn-gold.wide { margin-top: 12px; }
+
+/* admin: lock card */
+.adm-group { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; padding-top: 14px; border-top: 1px dashed var(--line); }
+.adm-group > b { font-size: 15px; }
+.adm-group > .fine { margin: 0; }
+.unit-in { position: relative; }
+.unit-in input { width: 100%; min-height: 56px; border-radius: 14px; border: 1.5px solid var(--line); background: #fff; padding: 0 84px 0 16px; font-size: 20px; font-weight: 700; color: var(--ink); }
+.unit-in input:focus { outline: none; border-color: var(--g6); }
+.unit-in em { position: absolute; right: 16px; top: 50%; transform: translateY(-50%); font-style: normal; font-weight: 700; font-size: 15px; color: var(--muted); pointer-events: none; }
