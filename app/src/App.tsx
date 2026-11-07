@@ -4,7 +4,7 @@ import { ChainBackend, humanError, switchChain, walletAccounts, walletChainId } 
 import { DemoBackend } from "./demo";
 import type { AddQuote, AdminEvent, AdminUserRow, Downline, ExitQuote, LockView, Rec, RecKind, Snapshot, Step, TeamStats } from "./types";
 import { REASON_TEXT } from "./types";
-import { applySlippage, E18, fmtTime, fmtUnits, parseUnitsSafe, short, usdToToken } from "./fmt";
+import { applySlippage, E18, fmtTime, fmtUnits, meetsThreshold, parseUnitsSafe, short, usdToToken } from "./fmt";
 
 type Backend = ChainBackend | DemoBackend;
 type Page = "mine" | "lock" | "refer" | "records" | "admin";
@@ -447,7 +447,9 @@ function LockPage({ cfg, snap, account, backend, canTx, onConnect }: { cfg: AppC
   const bal = me ? (mode === "usdt" ? me.usdt : me.reward) : null;
   const over = amt !== null && bal !== null && amt > bal;
   const thr = usd0(v.thresholdUsd);
-  const minePct = me ? (me.rightsReached ? 100 : Number((me.lockedUsd * 100n) / (v.thresholdUsd || 1n))) : 0; // rights are permanent
+  // rights are permanent once reached; a lowered threshold also counts (same 0.5% tolerance as the contract)
+  const lockOk = !!me && (me.rightsReached || meetsThreshold(me.lockedUsd, v.thresholdUsd));
+  const minePct = me ? (lockOk ? 100 : Number((me.lockedUsd * 100n) / (v.thresholdUsd || 1n))) : 0;
   const go = async () => {
     if (!amt || amt <= 0n) return;
     const s: Step[] =
@@ -492,12 +494,12 @@ function LockPage({ cfg, snap, account, backend, canTx, onConnect }: { cfg: AppC
         <section className="card lock-rights">
           <div className="row-sb">
             <b>推荐资格</b>
-            <span className={"pill " + (me.canRefer ? "ok" : "no")}>{me.canRefer ? "已开通" : me.rightsReached ? "挖矿入金额度不足" : "未开通"}</span>
+            <span className={"pill " + (me.canRefer ? "ok" : "no")}>{me.canRefer ? "已开通" : lockOk ? "挖矿入金额度不足" : "未开通"}</span>
           </div>
           <div className="kv">
             <div>
-              <span>累计锁仓额度</span>
-              <b>{fmtUnits(me.lockedUsd, 18)} / {thr} USDT{me.rightsReached ? " ✓" : ""}</b>
+              <span>累计锁仓额度 ≥ {thr} USDT</span>
+              <b className={lockOk ? "ok-t" : "err"}>{lockOk ? "已满足" : "未满足"}</b>
             </div>
             <div>
               <span>挖矿入金额度 ≥ {usd0(snap.params.thresholdUsd)} USDT</span>
