@@ -327,3 +327,24 @@ a { color: var(--g6); }
 .lock-addr .addr-wrap { flex: 1; min-width: 0; word-break: break-all; font-size: 14px; font-weight: 700; color: var(--ink); user-select: all; }
 .lock-addr .btn-mini { flex: none; color: var(--g6); }
 .lock-addr a { font-size: 13.5px; font-weight: 700; color: var(--g6); }
+
+/* 锁仓 page: network totals, my lock referral, two-coin values */
+.lock-net > b, .lock-rights > b, .lock-mine > b { font-size: 16px; }
+.lock-two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+.lock-two > div { display: flex; flex-direction: column; gap: 4px; padding: 12px; border-radius: 12px; background: var(--cream2); min-width: 0; }
+.lock-two span { font-size: 13px; color: var(--muted); }
+.lock-two b { font-size: 18px; font-weight: 800; color: var(--ink); word-break: break-all; }
+.lock-rights .kv > div > b { text-align: right; }
+.link-btn { display: block; margin: 10px 0 0 auto; border: 0; background: none; padding: 4px 0; color: var(--g6); font-weight: 700; font-size: 14px; }
+.two-l { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; flex: none; }
+.two-l span { white-space: nowrap; color: inherit; font-weight: inherit; font-size: inherit; }
+.lock-admin .kv > div > span:first-child, .lock-rights .kv > div > span:first-child, .lock-mine .kv > div > span:first-child { flex: 1 1 auto; min-width: 0; padding-right: 10px; }
+.lock-mine .kv { margin-top: 6px; }
+
+/* 锁仓: the three ways to lock, one under the other */
+.opt-col { display: flex; flex-direction: column; gap: 8px; }
+.opt-col button { width: 100%; min-height: 58px; border-radius: 14px; border: 1.5px solid var(--line); background: #fff; color: var(--ink); display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 3px; padding: 10px 16px; text-align: left; }
+.opt-col button b { font-size: 16px; }
+.opt-col button span { font-size: 12.5px; color: var(--muted); }
+.opt-col button.on { border-color: var(--g6); background: var(--g1); }
+.opt-col button.on b { color: var(--g8); }

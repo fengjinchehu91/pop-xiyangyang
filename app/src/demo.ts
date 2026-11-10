@@ -1,6 +1,6 @@
 // DEMO backend: consistent mock data for previewing the UI. Every screen shows a "演示数据" banner in this mode.
 // Nothing here is read from or sent to any chain.
-import type { AddQuote, AdminEvent, AdminUserRow, Downline, ExitQuote, LockItem, LockView, Rec, RecKind, Snapshot, Step, TeamStats } from "./types";
+import type { AddQuote, AdminEvent, AdminUserRow, Downline, ExitQuote, LockCoin, LockItem, LockView, Pair2, Rec, RecKind, Snapshot, Step, TeamStats } from "./types";
 import { DEFAULT_PARAMS } from "./types";
 import type { OnSteps } from "./chain";
 import { applySlippage, E18, meetsThreshold } from "./fmt";
@@ -219,9 +219,11 @@ export class DemoBackend {
     ];
     const K: Rec[] = [
       { kind, title: "锁仓推荐奖励 · 直推", sign: "+", lines: [{ label: "到账", value: "1,250.00 喜羊羊" }, { label: "来源", value: "0x8D31…70A2" }], time: t - 3600 * 3, tx, status: "已完成" },
-      { kind, title: "领取锁仓释放", sign: "+", lines: [{ label: "到账", value: "2,040.00 喜羊羊" }], time: t - 86400, tx, status: "已完成" },
-      { kind, title: "锁仓 · 200 天", sign: "-", lines: [{ label: "锁仓", value: "20,000.00 喜羊羊" }, { label: "锁仓额度", value: "791.43 USDT" }, { label: "立即到账奖励", value: "2,000.00 喜羊羊" }], time: t - 86400 * 10, tx, status: "已完成" },
-      { kind, title: "锁仓 · 100 天", sign: "-", lines: [{ label: "锁仓", value: "8,000.00 喜羊羊" }, { label: "用 USDT 买入", value: "400.00 USDT，2,000.00 喜羊羊到钱包" }, { label: "锁仓额度", value: "320.00 USDT" }, { label: "立即到账奖励", value: "400.00 喜羊羊" }], time: t - 86400 * 23, tx, status: "已完成" },
+      { kind, title: "锁仓推荐奖励 · 间推（顺延）", sign: "+", lines: [{ label: "到账", value: "300.00 POP" }, { label: "来源", value: "0x4F9E…3C77" }], time: t - 3600 * 20, tx, status: "已完成" },
+      { kind, title: "领取锁仓释放 · 喜羊羊", sign: "+", lines: [{ label: "到账", value: "2,040.00 喜羊羊" }], time: t - 86400, tx, status: "已完成" },
+      { kind, title: "锁仓 POP · 100 天", sign: "-", lines: [{ label: "锁仓", value: "3,000.00 POP" }, { label: "立即到账奖励", value: "150.00 POP" }], time: t - 86400 * 5, tx, status: "已完成" },
+      { kind, title: "锁仓 喜羊羊 · 200 天", sign: "-", lines: [{ label: "锁仓", value: "20,000.00 喜羊羊" }, { label: "立即到账奖励", value: "2,000.00 喜羊羊" }], time: t - 86400 * 10, tx, status: "已完成" },
+      { kind, title: "锁仓 喜羊羊 · 100 天", sign: "-", lines: [{ label: "锁仓", value: "8,000.00 喜羊羊" }, { label: "用 USDT 买入", value: "400.00 USDT，2,000.00 喜羊羊到钱包" }, { label: "立即到账奖励", value: "400.00 喜羊羊" }], time: t - 86400 * 23, tx, status: "已完成" },
     ];
     return { items: kind === "liquidity" ? L : kind === "claim" ? C : kind === "lock" ? K : D, nextTo: null };
   }
@@ -230,29 +232,34 @@ export class DemoBackend {
   async lockView(account: string): Promise<LockView | null> {
     const t = now();
     const locks: LockItem[] = [
-      { id: 1, amount: 20_000n * E18, claimed: 100n * E18, start: t - 86400 * 10 - 3600 * 5, days: 200 },
-      { id: 0, amount: 8_000n * E18, claimed: 1_760n * E18, start: t - 86400 * 23 - 3600 * 2, days: 100 },
+      { id: 2, coin: 1, amount: 3_000n * E18, claimed: 90n * E18, start: t - 86400 * 5 - 3600 * 7, days: 100 },
+      { id: 1, coin: 0, amount: 20_000n * E18, claimed: 100n * E18, start: t - 86400 * 10 - 3600 * 5, days: 200 },
+      { id: 0, coin: 0, amount: 8_000n * E18, claimed: 1_760n * E18, start: t - 86400 * 23 - 3600 * 2, days: 100 },
     ];
     const rel = (l: LockItem) => (l.amount * BigInt(Math.min(l.days, Math.floor((t - l.start) / 86400)))) / BigInt(l.days);
-    const still = locks.reduce((a, l) => a + l.amount - rel(l), 0n);
-    const cl = locks.reduce((a, l) => a + rel(l) - l.claimed, 0n);
+    const sum = (f: (l: LockItem) => bigint): Pair2 => [0, 1].map((c) => locks.filter((l) => l.coin === c).reduce((a, l) => a + f(l), 0n)) as Pair2;
     return {
-      address: addr(4242), paused: false, thresholdUsd: 300n * E18, owner: addr(9999),
-      totals: { locked: 2_610_000n * E18, claimed: 260_000n * E18, ownReward: 182_000n * E18, refReward: 128_000n * E18, refUnpaid: 42_000n * E18 },
-      operator: { allowance: 4_690_000n * E18, balance: 8_600_000n * E18 },
+      address: addr(4242), paused: false, owner: addr(9999),
+      totals: {
+        locked: [2_610_000n * E18, 180_000n * E18], claimed: [260_000n * E18, 9_000n * E18], ownReward: [182_000n * E18, 12_000n * E18],
+        refReward: [128_000n * E18, 8_000n * E18], refUnpaid: [42_000n * E18, 2_500n * E18],
+      },
+      operator: { allowance: [4_690_000n * E18, 300_000n * E18], balance: [8_600_000n * E18, 520_000n * E18] },
+      network: [2_350_000n * E18, 171_000n * E18],
       me: account
-        ? { lockedUsd: 1_111_430_000_000_000_000_000n, rightsReached: true, canRefer: true, miningEligible: true, stillLocked: still, claimable: cl, ownReward: 2_400n * E18, refReward: 3_650n * E18, locks, usdt: 3_820n * E18, reward: 25_430n * E18 }
+        ? {
+            canRefer: true, stillLocked: sum((l) => l.amount - rel(l)), claimable: sum((l) => rel(l) - l.claimed),
+            ownReward: [2_400n * E18, 150n * E18], refReward: [3_650n * E18, 300n * E18], team: [120_000n * E18, 8_000n * E18],
+            locks, usdt: 3_820n * E18, reward: 25_430n * E18, pop: 1_875_000n * E18,
+          }
         : null,
     };
   }
   async lockQuote(usdtIn: bigint): Promise<bigint> {
     return (((usdtIn * E18) / PRICE) * 995n) / 1000n;
   }
-  async lockValue(amount: bigint): Promise<bigint> {
-    return (amount * PRICE) / E18;
-  }
   lockBuy(_u: bigint, _b: number, _d: number, _s: number, steps: Step[], on: OnSteps) { return this.fake(steps, on); }
-  lockWallet(_a: bigint, _d: number, steps: Step[], on: OnSteps) { return this.fake(steps, on); }
+  lockWallet(_c: LockCoin, _a: bigint, _d: number, steps: Step[], on: OnSteps) { return this.fake(steps, on); }
   lockClaim(steps: Step[], on: OnSteps) { return this.fake(steps, on); }
   lockAdmin(_a: string, _x: bigint, steps: Step[], on: OnSteps) { return this.fake(steps, on); }
 

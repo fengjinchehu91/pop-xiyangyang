@@ -110,34 +110,42 @@ export interface Rec {
 }
 
 /** one lock: `days_` = 100 or 200; one release every 24 h after `start` */
+/** coin of a lock: 0 = 喜羊羊, 1 = POP */
+export type LockCoin = 0 | 1;
+
 export interface LockItem {
   id: number;
+  coin: LockCoin;
   amount: bigint;
   claimed: bigint;
   start: number;
   days: number;
 }
 
+/** amounts per coin: [喜羊羊, POP] */
+export type Pair2 = [bigint, bigint];
+
 /** 锁仓 contract state, and this wallet in it */
 export interface LockView {
   address: string;
   paused: boolean;
-  thresholdUsd: bigint;
   owner: string;
-  totals: { locked: bigint; claimed: bigint; ownReward: bigint; refReward: bigint; refUnpaid: bigint };
-  operator: { allowance: bigint; balance: bigint };
+  totals: { locked: Pair2; claimed: Pair2; ownReward: Pair2; refReward: Pair2; refUnpaid: Pair2 };
+  operator: { allowance: Pair2; balance: Pair2 };
+  /** still locked (not yet released): everyone, and this wallet's whole team (all levels below it) — from the automatic
+   * check service; null while it is not available */
+  network: Pair2 | null;
   me: null | {
-    lockedUsd: bigint; // 累计锁仓额度 (18-dec USD)
-    rightsReached: boolean; // 累计锁仓额度 reached the threshold (permanent)
-    canRefer: boolean; // + eligible in mining now
-    miningEligible: boolean;
-    stillLocked: bigint;
-    claimable: bigint;
-    ownReward: bigint;
-    refReward: bigint;
+    canRefer: boolean; // 挖矿入金额度 >= 100 now
+    stillLocked: Pair2;
+    claimable: Pair2;
+    ownReward: Pair2;
+    refReward: Pair2;
+    team: Pair2 | null;
     locks: LockItem[]; // newest first
     usdt: bigint; // wallet balances
     reward: bigint;
+    pop: bigint;
   };
 }
 

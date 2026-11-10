@@ -1257,6 +1257,9 @@ var DEFAULTS = {
   DEPLOY_BLOCK: 132001193,
   OLD_MINER: "0x363CBA25a4bC4617fAF017b1e0728f4AB7473E17",
   // previous mining contract (final referral settlement after it is paused)
+  LOCK: "0x2385EcA629297464FcBFC3eaD93160C00A649e1e",
+  // lock contract (XiyangLock2): its Locked events give the team lock totals on the website; empty = off
+  LOCK_DEPLOY_BLOCK: 132747421,
   CHAIN_ID: 56,
   RPC_URL: "https://bsc-rpc.publicnode.com",
   RPC_URL_2: "https://bsc-dataseed.bnbchain.org",
@@ -1356,6 +1359,7 @@ var POOL_SLOT_MIN_BNB = 15n * 10n ** 15n;
 var T_JOINED = topicOf("Joined(address,address,address,uint256)");
 var T_DEPOSITED = topicOf("Deposited(address,uint256,uint128,uint256,uint256,uint256,uint256,uint256,uint256)");
 var T_WITHDRAWN = topicOf("Withdrawn(address,uint128,uint256,uint256,uint256,uint256)");
+var T_LOCKED = topicOf("Locked(address,uint256,address,uint8,uint16,uint256,uint256,uint256)");
 function rlp(x) {
   if (Array.isArray(x)) {
     const parts = x.map(rlp);
@@ -1465,6 +1469,8 @@ function config(env) {
     miner: str("MINER").toLowerCase(),
     deployBlock: num("DEPLOY_BLOCK"),
     oldMiner: (str("OLD_MINER") || "").toLowerCase(),
+    lock: /^0x[0-9a-fA-F]{40}$/.test(str("LOCK") || "") && num("LOCK_DEPLOY_BLOCK") > 0 ? str("LOCK").toLowerCase() : "",
+    lockDeployBlock: num("LOCK_DEPLOY_BLOCK"),
     chainId: num("CHAIN_ID"),
     rpcs,
     logRpcs: env.LOG_RPC_URLS ? String(env.LOG_RPC_URLS).split(",").map((x) => x.trim()).filter(Boolean) : [.../* @__PURE__ */ new Set([...LOG_RPCS, ...rpcs])],
@@ -1558,6 +1564,55 @@ function applyLog(users, l) {
     add2(e, 5, pos(popIn - popRefund));
     add2(e, 6, pos(2n * (usdtIn - swapped - usdtRefund)));
   }
+}
+var freshLock = (c) => ({ addr: c.lock, scanned: c.lockDeployBlock - 1, chunk: c.logChunk, locks: {}, refs: {} });
+function applyLockLog(lk, l) {
+  if (l.removed) return;
+  if ((l.topics[0] || "").toLowerCase() !== T_LOCKED) return;
+  const u = "0x" + l.topics[1].slice(26).toLowerCase();
+  const r = "0x" + l.topics[3].slice(26).toLowerCase();
+  const w = (i) => BigInt("0x" + (l.data.slice(2 + 64 * i, 2 + 64 * (i + 1)) || "0"));
+  const coin = Number(w(0)), days = Number(w(1)), amount = w(2), start = Number(w(4));
+  if (coin !== 0 && coin !== 1 || days <= 0 || amount === 0n) return;
+  (lk.locks[u] || (lk.locks[u] = [])).push([coin, days, start, amount.toString()]);
+  if (BigInt(r) !== 0n) lk.refs[u] = r;
+}
+var unreleased = (x, now) => {
+  const amt = BigInt(x[3]);
+  const periods = Math.floor(Math.max(0, now - x[2]) / 86400);
+  if (periods >= x[1]) return 0n;
+  return amt - amt * BigInt(periods) / BigInt(x[1]);
+};
+var lockKidsMemo = /* @__PURE__ */ new WeakMap();
+function lockTeamOf(users, lk, addr, now) {
+  let kids = lockKidsMemo.get(lk);
+  const nRefs = Object.keys(lk.refs).length;
+  if (!kids || kids.users !== users || kids.nRefs !== nRefs) {
+    const m = /* @__PURE__ */ new Map();
+    const link = (a, r) => {
+      if (!r) return;
+      if (!m.has(r)) m.set(r, /* @__PURE__ */ new Set());
+      m.get(r).add(a);
+    };
+    for (const a in users) link(a, users[a][2]);
+    for (const a in lk.refs) link(a, lk.refs[a]);
+    kids = { users, m, nRefs };
+    lockKidsMemo.set(lk, kids);
+  }
+  const team = [0n, 0n];
+  const net = [0n, 0n];
+  for (const a in lk.locks) for (const x of lk.locks[a]) net[x[0]] += unreleased(x, now);
+  const me = String(addr).toLowerCase();
+  const seen = /* @__PURE__ */ new Set([me]);
+  const stack = [...kids.m.get(me) || []];
+  while (stack.length) {
+    const a = stack.pop();
+    if (seen.has(a)) continue;
+    seen.add(a);
+    for (const x of lk.locks[a] || []) team[x[0]] += unreleased(x, now);
+    for (const k of kids.m.get(a) || []) stack.push(k);
+  }
+  return { team: team.map(String), network: net.map(String), scanned: lk.scanned, at: now };
 }
 var settleSource = (s) => s.rebuilding && s.usersOld ? s.usersOld : s.users;
 var settleList = (s) => {
@@ -1853,7 +1908,7 @@ async function runOnce(env) {
         const maxCalls = s.rebuilding ? Math.max(1, Math.round(30 * load)) : Math.max(1, Math.round(c.maxLogCalls * load));
         if (!s.chunk || s.chunk > c.logChunk) s.chunk = c.logChunk;
         const order = [...c.logRpcs].sort((a, b) => a === s.logsUrl ? -1 : b === s.logsUrl ? 1 : 0);
-        const getLogs = async (from, end) => {
+        const getLogs = async (from, end, address = c.miner, topics = [[T_JOINED, T_DEPOSITED, T_WITHDRAWN]]) => {
           const fails = [];
           for (const url of order) {
             if (rpc.left <= 6) break;
@@ -1862,7 +1917,7 @@ async function runOnce(env) {
                 jsonrpc: "2.0",
                 id: rpc.id++,
                 method: "eth_getLogs",
-                params: [{ address: c.miner, fromBlock: qty(from), toBlock: qty(end), topics: [[T_JOINED, T_DEPOSITED, T_WITHDRAWN]] }]
+                params: [{ address, fromBlock: qty(from), toBlock: qty(end), topics }]
               });
               if (j && Array.isArray(j.result)) {
                 s.logsUrl = url;
@@ -1906,6 +1961,31 @@ async function runOnce(env) {
           delete s.usersOld;
           delete s.rebuilding;
         }
+        if (c.lock) {
+          try {
+            if (!s.lk || s.lk.addr !== c.lock) s.lk = freshLock(c);
+            const lk = s.lk;
+            let lcalls = 0;
+            const maxL = Math.max(1, Math.round(4 * load));
+            while (lk.scanned < to && lcalls < maxL && rpc.left > 8) {
+              const from = lk.scanned + 1;
+              const end = Math.min(to, from + lk.chunk - 1);
+              lcalls++;
+              let logs;
+              try {
+                logs = await getLogs(from, end, c.lock, [T_LOCKED]);
+              } catch (e) {
+                if (lk.chunk > 50) lk.chunk = Math.max(50, Math.floor(lk.chunk / 4));
+                throw e;
+              }
+              for (const l of logs) applyLockLog(lk, l);
+              lk.scanned = end;
+              if (lk.chunk < c.logChunk) lk.chunk = Math.min(c.logChunk, lk.chunk * 2);
+            }
+          } catch (e) {
+            st.errors.push("\u8BFB\u53D6\u9501\u4ED3\u8BB0\u5F55\u5931\u8D25\uFF1A" + (e?.message || e));
+          }
+        } else if (s.lk) delete s.lk;
       } catch (e) {
         st.errors.push("\u8BFB\u53D6\u7528\u6237\u8BB0\u5F55\u5931\u8D25\uFF1A" + (e?.message || e));
       }
@@ -2128,7 +2208,10 @@ var worker_default = {
       if (!/^0x[0-9a-fA-F]{40}$/.test(u)) out = { ok: false, why: "bad address" };
       else if (!s || !s.users) out = { ok: false, why: "no data yet" };
       else if (s.rebuilding) out = { ok: false, why: "rebuilding", scanned: s.scanned };
-      else out = { ok: true, at: s.status?.at ?? null, scanned: s.scanned, ...teamOf(s.users, u) };
+      else {
+        out = { ok: true, at: s.status?.at ?? null, scanned: s.scanned, ...teamOf(s.users, u) };
+        if (s.lk) out.lock = { addr: s.lk.addr, ...lockTeamOf(s.users, s.lk, u, Math.floor(Date.now() / 1e3)) };
+      }
       return new Response(JSON.stringify(out), {
         headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }
       });
