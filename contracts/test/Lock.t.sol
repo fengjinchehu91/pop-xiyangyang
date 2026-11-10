@@ -2,7 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {BaseTest} from "./Base.t.sol";
-import {XiyangLock} from "../src/XiyangLock.sol";
+import {XiyangLock} from "../src/legacy/XiyangLock.sol";
 import {MockSwapPair} from "./utils/LockMocks.sol";
 import {MockERC20} from "./utils/Mocks.sol";
 
