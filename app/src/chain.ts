@@ -13,6 +13,61 @@ const L_REF = 10n ** 27n;
 const Q192 = 1n << 192n;
 const ZERO = "0x0000000000000000000000000000000000000000";
 
+// ------------------------------------------------------------------ batched reads (Multicall3)
+// Contract reads made at the same moment are merged into ONE eth_call through Multicall3 (same address on every
+// chain). Inside wallet apps every read goes through the wallet's bridge one by one, so 20+ reads per refresh made
+// the page stutter; now a refresh is one or two requests. Reverts are passed back unchanged, so error messages
+// stay the same. Only plain reads at the latest block are batched; anything else goes straight through.
+const MULTICALL3 = "0xcA11bde05977b3631167028862bE2a173976CA11";
+const MC_IFACE = new E.Interface(["function aggregate3((address target,bool allowFailure,bytes callData)[] calls) payable returns ((bool success,bytes returnData)[] returnData)"]);
+const MC_MAX = 60;
+type McJob = { req: any; resolve: (v: string) => void; reject: (e: any) => void };
+function withMulticall(Base: any) {
+  return class extends Base {
+    mcOn = false;
+    mcQueue: McJob[] = [];
+    mcTimer: any = null;
+    async _perform(req: any): Promise<any> {
+      const t = req?.transaction;
+      const plain = this.mcOn && req?.method === "call" && (req.blockTag == null || req.blockTag === "latest") && t && t.to && t.data && !t.from && !t.value && !t.blockTag;
+      if (!plain) return super._perform(req);
+      return new Promise((resolve, reject) => {
+        this.mcQueue.push({ req, resolve, reject });
+        if (!this.mcTimer) this.mcTimer = setTimeout(() => this.mcFlush(), 8);
+      });
+    }
+    mcFlush() {
+      this.mcTimer = null;
+      const all = this.mcQueue;
+      this.mcQueue = [];
+      for (let i = 0; i < all.length; i += MC_MAX) this.mcSend(all.slice(i, i + MC_MAX));
+    }
+    async mcSend(jobs: McJob[]) {
+      if (jobs.length === 1) {
+        super._perform(jobs[0].req).then(jobs[0].resolve, jobs[0].reject);
+        return;
+      }
+      let res: any[];
+      try {
+        const data = MC_IFACE.encodeFunctionData("aggregate3", [jobs.map((j) => [j.req.transaction.to, true, j.req.transaction.data])]);
+        const raw = await super._perform({ method: "call", transaction: { to: MULTICALL3, data }, blockTag: "latest" });
+        res = MC_IFACE.decodeFunctionResult("aggregate3", raw)[0];
+      } catch {
+        // batch itself failed (node hiccup): fall back to one-by-one so nothing breaks
+        for (const j of jobs) super._perform(j.req).then(j.resolve, j.reject);
+        return;
+      }
+      jobs.forEach((j, i) => {
+        const [ok, out] = res[i];
+        if (ok) j.resolve(out);
+        else j.reject(E.makeError("execution reverted", "CALL_EXCEPTION", { action: "call", data: out, reason: null, transaction: j.req.transaction, invocation: null, revert: null }));
+      });
+    }
+  };
+}
+const McJsonRpcProvider = withMulticall(E.JsonRpcProvider);
+const McBrowserProvider = withMulticall(E.BrowserProvider);
+
 export type OnSteps = (steps: Step[]) => void;
 export type LockAdminAction = "pause" | "resume" | "approveXyy" | "approvePop";
 export const LOCK_COIN_NAME = ["喜羊羊", "POP"] as const;
@@ -54,7 +109,7 @@ export class ChainBackend {
     this.cfg = cfg;
     const req = new E.FetchRequest(cfg.rpcUrl);
     req.timeout = 12000;
-    this.rpc = new E.JsonRpcProvider(req, cfg.chainId, { staticNetwork: true });
+    this.rpc = new McJsonRpcProvider(req, cfg.chainId, { staticNetwork: true });
     this.read = this.rpc;
   }
 
@@ -65,7 +120,7 @@ export class ChainBackend {
       if (window.ethereum) {
         const cid = parseInt(await window.ethereum.request({ method: "eth_chainId" }), 16);
         if (cid === this.cfg.chainId) {
-          this.read = new E.BrowserProvider(window.ethereum, this.cfg.chainId);
+          this.read = new McBrowserProvider(window.ethereum, this.cfg.chainId);
           this.readVia = "wallet";
         }
       }
@@ -77,6 +132,11 @@ export class ChainBackend {
       return;
     }
     try {
+      // turn on batched reads only where Multicall3 really exists (BSC mainnet / forks); local test chains keep one-by-one
+      if ((await this.read.getCode(MULTICALL3).catch(() => "0x")) !== "0x") {
+        this.read.mcOn = true;
+        this.rpc.mcOn = true;
+      }
       const code = await this.read.getCode(this.cfg.miner);
       if (code === "0x") {
         this.problem = "配置的挖矿合约地址上没有合约代码";

@@ -21,6 +21,34 @@ const addSlip = (mode: "usdt" | "both") => (mode === "usdt" ? ZAP_SLIP_BPS : SLI
 const QUOTE_TTL = 60_000;
 
 // =====================================================================================================
+/** setInterval that only runs while the page is on screen; runs once right away when the user comes back */
+function useVisibleInterval(fn: () => void, ms: number, deps: any[]) {
+  useEffect(() => {
+    let id: any = null;
+    const start = () => {
+      if (id === null) id = setInterval(fn, ms);
+    };
+    const stop = () => {
+      if (id !== null) clearInterval(id);
+      id = null;
+    };
+    const onVis = () => {
+      if (document.visibilityState === "visible") {
+        fn();
+        start();
+      } else stop();
+    };
+    fn();
+    if (document.visibilityState !== "hidden") start();
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      stop();
+      document.removeEventListener("visibilitychange", onVis);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, deps);
+}
+
 export default function App({ cfg }: { cfg: AppConfig }) {
   const demo = cfg.mode === "demo";
   const backend = useMemo<Backend>(() => (demo ? new DemoBackend() : new ChainBackend(cfg)), [cfg, demo]);
@@ -65,21 +93,23 @@ export default function App({ cfg }: { cfg: AppConfig }) {
     };
   }, [demo]);
 
+  const busy = useRef<any>(null);
   const refresh = useCallback(async () => {
-    if (!ready) return;
+    const key = { backend, account };
+    // same wallet's previous refresh still running: skip instead of piling up (a new wallet always refreshes)
+    if (!ready || (busy.current && busy.current.backend === backend && busy.current.account === account)) return;
+    busy.current = key;
     try {
       setSnap(await backend.snapshot(account || undefined));
       setLoadErr("");
     } catch (e: any) {
       setLoadErr("数据加载失败：" + humanError(e));
+    } finally {
+      if (busy.current === key) busy.current = null;
     }
   }, [backend, account, ready]);
 
-  useEffect(() => {
-    refresh();
-    const id = setInterval(refresh, demo ? 30_000 : 15_000);
-    return () => clearInterval(id);
-  }, [refresh, demo]);
+  useVisibleInterval(refresh, demo ? 30_000 : 15_000, [refresh, demo]);
 
   // 3-second display update of estimates (not a transaction)
   useEffect(() => {
@@ -388,16 +418,17 @@ const LOCK_PLANS = [
 function useLockView(backend: Backend, account: string): [LockView | null | undefined, () => void] {
   const [v, setV] = useState<LockView | null | undefined>(undefined);
   const [n, setN] = useState(0);
+  const gen = useRef(0);
   useEffect(() => {
-    let off = false;
-    const get = () => backend.lockView(account).then((x) => !off && setV(x), () => {});
-    get();
-    const id = setInterval(get, 15_000);
+    const g = ++gen.current;
     return () => {
-      off = true;
-      clearInterval(id);
+      if (gen.current === g) gen.current++;
     };
   }, [backend, account, n]);
+  useVisibleInterval(() => {
+    const g = gen.current;
+    backend.lockView(account).then((x) => gen.current === g && setV(x), () => {});
+  }, 15_000, [backend, account, n]);
   return [v, () => setN((x) => x + 1)];
 }
 
