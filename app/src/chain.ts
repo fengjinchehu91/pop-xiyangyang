@@ -131,74 +131,156 @@ export class ChainBackend {
       this.problem = "挖矿合约未配置（尚未部署或未填写地址），已禁止交易";
       return;
     }
+    // Contract settings that can never change (addresses, decimals, price range...) are kept on the phone after the
+    // first visit, keyed by chain + contract addresses, so later visits start at once. Balances, rewards and every
+    // other figure are always read fresh. The saved copy is re-checked against the chain in the background; if it
+    // ever differs the fresh copy is saved and the page reloads once.
+    const key = ["xyy-static-v1", this.cfg.chainId, this.cfg.miner, this.cfg.oldMiner || "", this.cfg.lock || ""].join(":").toLowerCase();
+    let saved: any = null;
     try {
-      // turn on batched reads only where Multicall3 really exists (BSC mainnet / forks); local test chains keep one-by-one
-      if ((await this.read.getCode(MULTICALL3).catch(() => "0x")) !== "0x") {
-        this.read.mcOn = true;
-        this.rpc.mcOn = true;
-      }
-      const code = await this.read.getCode(this.cfg.miner);
-      if (code === "0x") {
-        this.problem = "配置的挖矿合约地址上没有合约代码";
-        return;
-      }
-      this.miner = new E.Contract(this.cfg.miner, MINER_ABI, this.read);
-      this.minerRpc = this.read === this.rpc ? this.miner : new E.Contract(this.cfg.miner, MINER_ABI, this.rpc);
-      const [pool, pop, usdt, reward, rewardPool, fee, token0, sqrtLo, sqrtHi] = await Promise.all([
-        this.miner.POOL(),
-        this.miner.POP(),
-        this.miner.USDT(),
-        this.miner.REWARD(),
-        this.miner.REWARD_POOL(),
-        this.miner.FEE(),
-        this.miner.TOKEN0(),
-        this.miner.SQRT_LOWER(),
-        this.miner.SQRT_UPPER(),
-      ]);
-      this.sqrtLo = sqrtLo;
-      this.sqrtHi = sqrtHi;
-      // cross-check contract immutables against the configured addresses
-      const same = (a: string, b: string) => !b || a.toLowerCase() === b.toLowerCase();
-      if (!same(pool, this.cfg.pool) || !same(pop, this.cfg.pop) || !same(reward, this.cfg.reward) || !same(usdt, this.cfg.usdt)) {
-        this.problem = "合约内的池子/代币地址与配置不一致，已禁止交易";
-        return;
-      }
-      const npm = String(await this.miner.NPM().catch(() => ""));
-      this.addr = { miner: this.cfg.miner, pool, pop, usdt, reward, rewardPool, npm };
-      const t = (a: string) => new E.Contract(a, ERC20_ABI, this.read);
-      const [du, dp, dr] = await Promise.all([t(usdt).decimals(), t(pop).decimals(), t(reward).decimals()]);
-      this.dec = { usdt: Number(du), pop: Number(dp), reward: Number(dr) };
-      this.fee = Number(fee);
-      this.twapMinutes = Math.round(Number(await this.miner.TWAP_WINDOW().catch(() => 1800)) / 60);
-      this.token0 = token0;
-      this.ready = true;
+      saved = JSON.parse(localStorage.getItem(key) || "null");
+    } catch {
+      saved = null;
+    }
+    if (saved && saved.complete && this.applyStatic(saved)) {
+      this.loadStatic()
+        .then((fresh) => {
+          if (!fresh.ok || !fresh.complete) return;
+          if (JSON.stringify(fresh) !== JSON.stringify(saved)) {
+            try {
+              localStorage.setItem(key, JSON.stringify(fresh));
+            } catch {
+              /* storage full / private mode */
+            }
+            this.applyStatic(fresh); // chain wins: switch to the fresh settings in place
+          }
+        })
+        .catch(() => {});
+      return;
+    }
+    let st: any;
+    try {
+      st = await this.loadStatic();
     } catch (e: any) {
       this.problem = "读取链上数据失败：" + (e?.shortMessage || e?.message || "未知错误");
       return;
     }
-    await this.initOld();
-    await this.initLock();
-  }
-
-  /** 锁仓 contract: only used if it belongs to this mining contract */
-  private async initLock(): Promise<void> {
-    const a = this.cfg.lock;
-    if (!a || !E.isAddress(a)) return;
-    try {
-      if ((await this.read.getCode(a)) === "0x") return;
-      const l = new E.Contract(a, LOCK_ABI, this.read);
-      const [miner, pair, viaPop] = await Promise.all([l.MINER(), l.PAIR(), l.PAIR_VIA_POP()]);
-      if (String(miner).toLowerCase() !== this.addr.miner.toLowerCase()) return;
-      const p = new E.Contract(pair, PAIR_ABI, this.read);
-      const t0 = String(await p.token0());
-      this.lock = l;
-      this.lockRpc = this.read === this.rpc ? l : new E.Contract(a, LOCK_ABI, this.rpc);
-      this.lockPair = { pair: p, rewardIs0: t0.toLowerCase() === this.addr.reward.toLowerCase(), viaPop: Boolean(viaPop) };
-    } catch {
-      /* 锁仓 not available: the page says so */
+    if (!this.applyStatic(st)) return;
+    if (st.ok && st.complete) {
+      try {
+        localStorage.setItem(key, JSON.stringify(st));
+      } catch {
+        /* storage full / private mode: just read again next time */
+      }
     }
   }
 
+  /** read every never-changing contract setting at once (2 rounds instead of 11 one-after-another) */
+  private async loadStatic(): Promise<any> {
+    const cfg = this.cfg;
+    const n = (x: any) => (x == null ? null : String(x));
+    const tryC = (f: () => Promise<any>) => f().then(n, () => null);
+    // BSC mainnet always has Multicall3; other chains (local tests) are checked
+    const mc = cfg.chainId === 56 ? true : (await this.read.getCode(MULTICALL3).catch(() => "0x")) !== "0x";
+    this.read.mcOn = mc;
+    this.rpc.mcOn = mc;
+    const m = new E.Contract(cfg.miner, MINER_ABI, this.read);
+    const t = (a: string) => new E.Contract(a, ERC20_ABI, this.read);
+    const okAddr = (a?: string) => !!a && E.isAddress(a);
+    const oldA = okAddr(cfg.oldMiner) && cfg.oldMiner!.toLowerCase() !== cfg.miner.toLowerCase() ? cfg.oldMiner! : "";
+    const lockA = okAddr(cfg.lock) ? cfg.lock! : "";
+    const o = oldA ? new E.Contract(oldA, OLD_MINER_ABI, this.read) : null;
+    const l = lockA ? new E.Contract(lockA, LOCK_ABI, this.read) : null;
+    const dec = (a?: string) => (okAddr(a) ? tryC(() => t(a!).decimals()) : Promise.resolve(null));
+    const none = Promise.resolve(null);
+    const r = await Promise.all([
+      this.read.getCode(cfg.miner),
+      tryC(() => m.POOL()), tryC(() => m.POP()), tryC(() => m.USDT()), tryC(() => m.REWARD()), tryC(() => m.REWARD_POOL()),
+      tryC(() => m.FEE()), tryC(() => m.TOKEN0()), tryC(() => m.SQRT_LOWER()), tryC(() => m.SQRT_UPPER()),
+      tryC(() => m.NPM()), tryC(() => m.TWAP_WINDOW()),
+      dec(cfg.usdt), dec(cfg.pop), dec(cfg.reward),
+      oldA ? this.read.getCode(oldA) : none,
+      o ? tryC(() => o.POOL()) : none, o ? tryC(() => o.NPM()) : none, o ? tryC(() => o.REWARD()) : none,
+      o ? tryC(() => o.SQRT_LOWER()) : none, o ? tryC(() => o.SQRT_UPPER()) : none,
+      lockA ? this.read.getCode(lockA) : none,
+      l ? tryC(() => l.MINER()) : none, l ? tryC(() => l.PAIR()) : none, l ? tryC(() => l.PAIR_VIA_POP()) : none,
+    ]);
+    const [code, pool, pop, usdt, reward, rewardPool, fee, token0, sqrtLo, sqrtHi, npm, twap] = r;
+    let [du, dp, dr] = [r[12], r[13], r[14]];
+    const [oCode, oPool, oNpm, oReward, oLo, oHi, lCode, lMiner, lPair, lVia] = r.slice(15);
+    if (code === "0x") return { ok: false, problem: "配置的挖矿合约地址上没有合约代码" };
+    if ([pool, pop, usdt, reward, rewardPool, fee, token0, sqrtLo, sqrtHi].some((x) => x == null)) throw new Error("合约设置读取不完整");
+    // decimals: read from the contract's own token addresses when the config lists different (or no) ones
+    const same = (a: any, b: any) => String(a).toLowerCase() === String(b).toLowerCase();
+    const second: Promise<any>[] = [
+      !du || !same(usdt, cfg.usdt) ? tryC(() => t(usdt).decimals()) : Promise.resolve(du),
+      !dp || !same(pop, cfg.pop) ? tryC(() => t(pop).decimals()) : Promise.resolve(dp),
+      !dr || !same(reward, cfg.reward) ? tryC(() => t(reward).decimals()) : Promise.resolve(dr),
+      lCode && lCode !== "0x" && lPair ? tryC(() => new E.Contract(lPair, PAIR_ABI, this.read).token0()) : none,
+    ];
+    const [du2, dp2, dr2, lT0] = await Promise.all(second);
+    // a contract that exists but could not be read is a network hiccup, not "absent": fail instead of saving a wrong copy
+    const hasOld = !!(oldA && oCode && oCode !== "0x");
+    const hasLock = !!(lockA && lCode && lCode !== "0x");
+    if (hasOld && [oPool, oNpm, oReward, oLo, oHi].some((x) => x == null)) throw new Error("旧合约设置读取不完整");
+    if (hasLock && [lMiner, lPair, lVia, lT0].some((x) => x == null)) throw new Error("锁仓合约设置读取不完整");
+    [du, dp, dr] = [du2, dp2, dr2];
+    if (du == null || dp == null || dr == null) throw new Error("代币小数位读取失败");
+    return {
+      ok: true,
+      complete: npm != null && twap != null, // only a complete copy is ever saved on the phone
+      miner: { pool, pop, usdt, reward, rewardPool, fee, token0, sqrtLo, sqrtHi, npm: npm ?? "", twap: twap ?? "1800", du, dp, dr },
+      old: hasOld ? { a: oldA, pool: oPool, npm: oNpm, reward: oReward, lo: oLo, hi: oHi } : null,
+      lock: hasLock ? { a: lockA, miner: lMiner, pair: lPair, viaPop: lVia, t0: lT0 } : null,
+    };
+  }
+
+  /** put the static settings in place, with the same safety checks as before; false = page must not trade */
+  private applyStatic(st: any): boolean {
+    if (!st || !st.ok) {
+      this.problem = st?.problem || "读取链上数据失败";
+      return false;
+    }
+    const x = st.miner;
+    // cross-check contract immutables against the configured addresses
+    const same = (a: string, b: string) => !b || a.toLowerCase() === b.toLowerCase();
+    if (!same(x.pool, this.cfg.pool) || !same(x.pop, this.cfg.pop) || !same(x.reward, this.cfg.reward) || !same(x.usdt, this.cfg.usdt)) {
+      this.problem = "合约内的池子/代币地址与配置不一致，已禁止交易";
+      return false;
+    }
+    this.read.mcOn = this.cfg.chainId === 56 || this.read.mcOn;
+    this.rpc.mcOn = this.read.mcOn;
+    this.miner = new E.Contract(this.cfg.miner, MINER_ABI, this.read);
+    this.minerRpc = this.read === this.rpc ? this.miner : new E.Contract(this.cfg.miner, MINER_ABI, this.rpc);
+    this.sqrtLo = BigInt(x.sqrtLo);
+    this.sqrtHi = BigInt(x.sqrtHi);
+    this.addr = { miner: this.cfg.miner, pool: x.pool, pop: x.pop, usdt: x.usdt, reward: x.reward, rewardPool: x.rewardPool, npm: x.npm };
+    this.dec = { usdt: Number(x.du), pop: Number(x.dp), reward: Number(x.dr) };
+    this.fee = Number(x.fee);
+    this.twapMinutes = Math.round(Number(x.twap) / 60);
+    this.token0 = x.token0;
+    this.problem = "";
+    this.ready = true;
+    const eq = (a: string, b: string) => String(a).toLowerCase() === String(b).toLowerCase();
+    this.old = this.oldRpc = null;
+    const o = st.old;
+    if (o && eq(o.pool, this.addr.pool) && eq(o.npm, this.addr.npm) && eq(o.reward, this.addr.reward)) {
+      this.old = new E.Contract(o.a, OLD_MINER_ABI, this.read);
+      this.oldRpc = this.read === this.rpc ? this.old : new E.Contract(o.a, OLD_MINER_ABI, this.rpc);
+      this.oldSqrt = [BigInt(o.lo), BigInt(o.hi)];
+    }
+    this.lock = this.lockRpc = this.lockPair = null;
+    const k = st.lock;
+    if (k && eq(k.miner, this.addr.miner)) {
+      this.lock = new E.Contract(k.a, LOCK_ABI, this.read);
+      this.lockRpc = this.read === this.rpc ? this.lock : new E.Contract(k.a, LOCK_ABI, this.rpc);
+      this.lockPair = { pair: new E.Contract(k.pair, PAIR_ABI, this.read), rewardIs0: eq(k.t0, this.addr.reward), viaPop: k.viaPop === "true" };
+    }
+    return true;
+  }
+
+
+  /** 锁仓 contract: only used if it belongs to this mining contract */
   // ------------------------------------------------------------------ 锁仓 (喜羊羊 + POP)
   private lockToken(coin: LockCoin): string {
     return coin === 1 ? this.addr.pop : this.addr.reward;
@@ -429,23 +511,6 @@ export class ChainBackend {
   }
 
   /** previous contract: only used if it sits on the same pool, position manager and reward token */
-  private async initOld(): Promise<void> {
-    const a = this.cfg.oldMiner;
-    if (!a || !E.isAddress(a) || a.toLowerCase() === this.cfg.miner.toLowerCase()) return;
-    try {
-      if ((await this.read.getCode(a)) === "0x") return;
-      const o = new E.Contract(a, OLD_MINER_ABI, this.read);
-      const [pool, npm, reward, lo, hi] = await Promise.all([o.POOL(), o.NPM(), o.REWARD(), o.SQRT_LOWER(), o.SQRT_UPPER()]);
-      const same = (x: string, y: string) => String(x).toLowerCase() === String(y).toLowerCase();
-      if (!same(pool, this.addr.pool) || !same(npm, this.addr.npm) || !same(reward, this.addr.reward)) return;
-      this.old = o;
-      this.oldRpc = this.read === this.rpc ? o : new E.Contract(a, OLD_MINER_ABI, this.rpc);
-      this.oldSqrt = [lo, hi];
-    } catch {
-      /* previous contract unreadable: the page simply shows no migration hint */
-    }
-  }
-
   private emptySnap(problem: string): Snapshot {
     return {
       params: { ...DEFAULT_PARAMS },
@@ -480,7 +545,21 @@ export class ChainBackend {
   async snapshot(account?: string): Promise<Snapshot> {
     if (!this.ready) return this.emptySnap(this.problem || "未就绪");
     const m = this.miner;
-    const params = await this.params();
+    const t = (a: string) => new E.Contract(a, ERC20_ABI, this.read);
+    // the wallet's own figures are fetched together with the global ones (one round instead of three)
+    const mine = account
+      ? Promise.all([
+          m.getUser(account),
+          m.pendingUsd(account),
+          m.valueUsd(account),
+          m.isEligible(account),
+          t(this.addr.usdt).balanceOf(account),
+          t(this.addr.pop).balanceOf(account),
+          t(this.addr.reward).balanceOf(account),
+        ])
+      : null;
+    mine?.catch(() => {});
+    const paramsP = this.params();
     const [accruing, reasons, adminPaused, lastCp, vpr, totalLiq, participants, paidReward, owner, operator, runway, rp, reserve, totalPr] =
       await Promise.all([
         m.accruing(),
@@ -498,6 +577,7 @@ export class ChainBackend {
         m.reserveView(),
         m.totalPrincipal(),
       ]);
+    const params = await paramsP;
     const snap: Snapshot = {
       ...this.emptySnap(""),
       params,
@@ -521,17 +601,8 @@ export class ChainBackend {
       runwayDays: Number(runway),
       reserve: { balance: reserve[0], allowance: reserve[1], usable: reserve[2], liabilityUsd: reserve[3] },
     };
-    if (account) {
-      const t = (a: string) => new E.Contract(a, ERC20_ABI, this.read);
-      const [u, pend, val, elig, bu, bp, br] = await Promise.all([
-        m.getUser(account),
-        m.pendingUsd(account),
-        m.valueUsd(account),
-        m.isEligible(account),
-        t(this.addr.usdt).balanceOf(account),
-        t(this.addr.pop).balanceOf(account),
-        t(this.addr.reward).balanceOf(account),
-      ]);
+    if (account && mine) {
+      const [u, pend, val, elig, bu, bp, br] = await mine;
       const [amounts, old] = await Promise.all([
         u.liquidity > 0n ? this.positionAmounts(u.liquidity) : Promise.resolve([0n, 0n] as [bigint, bigint]),
         this.oldUser(account, u).catch(() => null),
