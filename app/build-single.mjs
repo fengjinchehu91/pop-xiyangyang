@@ -12,7 +12,7 @@ const js = r.outputFiles.find((f) => f.path.endsWith(".js")).text.replace(/<\/sc
 const css = r.outputFiles.find((f) => f.path.endsWith(".css")).text;
 const assets = {};
 for (const f of fs.readdirSync("public/assets")) {
-  const mime = f.endsWith(".png") ? "image/png" : f.endsWith(".webp") ? "image/webp" : "image/jpeg";
+  const mime = f.endsWith(".png") ? "image/png" : f.endsWith(".webp") ? "image/webp" : f.endsWith(".svg") ? "image/svg+xml" : "image/jpeg";
   assets[f] = `data:${mime};base64,` + fs.readFileSync("public/assets/" + f).toString("base64");
 }
 const cfg = JSON.parse(fs.readFileSync("public/config.json", "utf8"));

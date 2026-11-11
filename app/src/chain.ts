@@ -2,9 +2,9 @@
 // injected wallet (EIP-1193). Never falls back to mock values: missing data is reported as unavailable.
 // @ts-ignore vendored ESM build of ethers v6.13.4 (MIT)
 import * as E from "./vendor/ethers.min.js";
-import { MINER_ABI, OLD_MINER_ABI, LOCK_ABI, ERC20_ABI, POOL_ABI, PAIR_ABI } from "./abi";
+import { MINER_ABI, OLD_MINER_ABI, LOCK_ABI, ERC20_ABI, POOL_ABI, PAIR_ABI, INS_ABI } from "./abi";
 import type { AppConfig } from "./config";
-import type { AddQuote, AdminEvent, AdminUserRow, Downline, ExitQuote, LockCoin, LockItem, LockView, OldStatus, Pair2, OldUserView, Params, Rec, RecKind, Snapshot, Step, TeamStats } from "./types";
+import type { AddQuote, AdminEvent, AdminUserRow, Downline, ExitQuote, LockCoin, LockItem, LockView, OldStatus, Pair2, OldUserView, Params, Rec, RecKind, Snapshot, Step, TeamStats, InsView, InsLot, InsTeam, InsRefRec, InsSellQuote, InsParams } from "./types";
 import { DEFAULT_PARAMS } from "./types";
 import { amountsForLiquidity, liquidityForAmounts, pairedAmount } from "./v3math";
 import { applySlippage, fmtUnits, meetsThreshold, short } from "./fmt";
@@ -70,6 +70,7 @@ const McBrowserProvider = withMulticall(E.BrowserProvider);
 
 export type OnSteps = (steps: Step[]) => void;
 export type LockAdminAction = "pause" | "resume" | "approveXyy" | "approvePop";
+export type InsAdminAction = "dailyLimits" | "rules" | "split" | "moveBook" | "adjustBook" | "approve" | "addSub" | "delSub" | "poolWallet" | "pause" | "resume" | "refresh";
 export const LOCK_COIN_NAME = ["喜羊羊", "POP"] as const;
 export type AdminAction = "pause" | "resume" | "checkpoint" | "approve" | "rewardParams" | "safetyParams" | "claimPause" | "claimResume" | "end" | "oldPause" | "oldEnd" | "oldRevoke";
 
@@ -104,6 +105,9 @@ export class ChainBackend {
   lock: any = null;
   lockRpc: any = null;
   lockPair: { pair: any; rewardIs0: boolean; viaPop: boolean } | null = null;
+  // POP 保险池 contract (null = not configured)
+  ins: any = null;
+  insRpc: any = null;
 
   constructor(cfg: AppConfig) {
     this.cfg = cfg;
@@ -135,7 +139,7 @@ export class ChainBackend {
     // first visit, keyed by chain + contract addresses, so later visits start at once. Balances, rewards and every
     // other figure are always read fresh. The saved copy is re-checked against the chain in the background; if it
     // ever differs the fresh copy is saved and the page reloads once.
-    const key = ["xyy-static-v1", this.cfg.chainId, this.cfg.miner, this.cfg.oldMiner || "", this.cfg.lock || ""].join(":").toLowerCase();
+    const key = ["xyy-static-v1", this.cfg.chainId, this.cfg.miner, this.cfg.oldMiner || "", this.cfg.lock || "", this.cfg.ins || ""].join(":").toLowerCase();
     let saved: any = null;
     try {
       saved = JSON.parse(localStorage.getItem(key) || "null");
@@ -191,6 +195,8 @@ export class ChainBackend {
     const lockA = okAddr(cfg.lock) ? cfg.lock! : "";
     const o = oldA ? new E.Contract(oldA, OLD_MINER_ABI, this.read) : null;
     const l = lockA ? new E.Contract(lockA, LOCK_ABI, this.read) : null;
+    const insA = okAddr(cfg.ins) ? cfg.ins! : "";
+    const ic = insA ? new E.Contract(insA, INS_ABI, this.read) : null;
     const dec = (a?: string) => (okAddr(a) ? tryC(() => t(a!).decimals()) : Promise.resolve(null));
     const none = Promise.resolve(null);
     const r = await Promise.all([
@@ -204,10 +210,13 @@ export class ChainBackend {
       o ? tryC(() => o.SQRT_LOWER()) : none, o ? tryC(() => o.SQRT_UPPER()) : none,
       lockA ? this.read.getCode(lockA) : none,
       l ? tryC(() => l.MINER()) : none, l ? tryC(() => l.PAIR()) : none, l ? tryC(() => l.PAIR_VIA_POP()) : none,
+      insA ? this.read.getCode(insA) : none,
+      ic ? tryC(() => ic.MINER()) : none, ic ? tryC(() => ic.POOL()) : none, ic ? tryC(() => ic.POP()) : none, ic ? tryC(() => ic.USDT()) : none,
     ]);
     const [code, pool, pop, usdt, reward, rewardPool, fee, token0, sqrtLo, sqrtHi, npm, twap] = r;
     let [du, dp, dr] = [r[12], r[13], r[14]];
-    const [oCode, oPool, oNpm, oReward, oLo, oHi, lCode, lMiner, lPair, lVia] = r.slice(15);
+    const [oCode, oPool, oNpm, oReward, oLo, oHi, lCode, lMiner, lPair, lVia] = r.slice(15, 25);
+    const [iCode, iMiner, iPool, iPop, iUsdt] = r.slice(25);
     if (code === "0x") return { ok: false, problem: "配置的挖矿合约地址上没有合约代码" };
     if ([pool, pop, usdt, reward, rewardPool, fee, token0, sqrtLo, sqrtHi].some((x) => x == null)) throw new Error("合约设置读取不完整");
     // decimals: read from the contract's own token addresses when the config lists different (or no) ones
@@ -224,6 +233,8 @@ export class ChainBackend {
     const hasLock = !!(lockA && lCode && lCode !== "0x");
     if (hasOld && [oPool, oNpm, oReward, oLo, oHi].some((x) => x == null)) throw new Error("旧合约设置读取不完整");
     if (hasLock && [lMiner, lPair, lVia, lT0].some((x) => x == null)) throw new Error("锁仓合约设置读取不完整");
+    const hasIns = !!(insA && iCode && iCode !== "0x");
+    if (hasIns && [iMiner, iPool, iPop, iUsdt].some((x) => x == null)) throw new Error("保险池合约设置读取不完整");
     [du, dp, dr] = [du2, dp2, dr2];
     if (du == null || dp == null || dr == null) throw new Error("代币小数位读取失败");
     return {
@@ -232,6 +243,7 @@ export class ChainBackend {
       miner: { pool, pop, usdt, reward, rewardPool, fee, token0, sqrtLo, sqrtHi, npm: npm ?? "", twap: twap ?? "1800", du, dp, dr },
       old: hasOld ? { a: oldA, pool: oPool, npm: oNpm, reward: oReward, lo: oLo, hi: oHi } : null,
       lock: hasLock ? { a: lockA, miner: lMiner, pair: lPair, viaPop: lVia, t0: lT0 } : null,
+      ins: hasIns ? { a: insA, miner: iMiner, pool: iPool, pop: iPop, usdt: iUsdt } : null,
     };
   }
 
@@ -275,6 +287,13 @@ export class ChainBackend {
       this.lock = new E.Contract(k.a, LOCK_ABI, this.read);
       this.lockRpc = this.read === this.rpc ? this.lock : new E.Contract(k.a, LOCK_ABI, this.rpc);
       this.lockPair = { pair: new E.Contract(k.pair, PAIR_ABI, this.read), rewardIs0: eq(k.t0, this.addr.reward), viaPop: k.viaPop === "true" };
+    }
+    // 保险池: only used if it is built on this very mining contract, pool and tokens
+    this.ins = this.insRpc = null;
+    const i = st.ins;
+    if (i && eq(i.miner, this.addr.miner) && eq(i.pool, this.addr.pool) && eq(i.pop, this.addr.pop) && eq(i.usdt, this.addr.usdt)) {
+      this.ins = new E.Contract(i.a, INS_ABI, this.read);
+      this.insRpc = this.read === this.rpc ? this.ins : new E.Contract(i.a, INS_ABI, this.rpc);
     }
     return true;
   }
@@ -454,6 +473,234 @@ export class ChainBackend {
       approvePop: () => new E.Contract(this.addr.pop, ERC20_ABI, s).approve(this.lock.target, arg),
     }[action];
     return this.runSteps(steps, [fn], on);
+  }
+
+  // ------------------------------------------------------------------ POP 保险池
+  /** 保险池 contract: only used if it trades the same POP/USDT pool and reads this mining contract's referrals */
+
+  /** this wallet's role in the insurance pool admin */
+  async insRole(account: string): Promise<"owner" | "sub" | "wallet" | null> {
+    if (!this.ins || !account) return null;
+    const [o, s, w] = await Promise.all([this.ins.owner(), this.ins.isSub(account), this.ins.poolWallet()]);
+    const a = account.toLowerCase();
+    return String(o).toLowerCase() === a ? "owner" : s ? "sub" : String(w).toLowerCase() === a ? "wallet" : null;
+  }
+
+  /** 7 levels below `account` in the insurance pool, from the automatic check service; null when unavailable */
+  private async insTeam(account: string): Promise<InsTeam | null> {
+    try {
+      const r = await fetch(`./keeper/team.json?u=${account}`, { cache: "no-store" });
+      if (!r.ok) return null;
+      const j = await r.json();
+      const t = j && j.ok ? j.ins : null;
+      if (!t || String(t.addr || "").toLowerCase() !== String(this.ins?.target || "").toLowerCase()) return null;
+      return {
+        levels: (t.levels || []).map((x: any, i: number) => ({ n: i + 1, people: Number(x[0] || 0), inPool: Number(x[1] || 0), hold: BigInt(x[2] || "0") })),
+        directs: (t.directs || []).map((x: any) => ({ addr: E.getAddress(String(x[0])), hold: BigInt(x[1] || "0") })),
+        people: Number(t.people || 0),
+        hold: BigInt(t.hold || "0"),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  async insView(account: string): Promise<InsView | null> {
+    const c = this.ins;
+    if (!c) return null;
+    const [owner, wallet, paused, rev, p, bk, subs, ws, pr, parts, tPop, tBought, tComp, tRef, day] = await Promise.all([
+      c.owner(), c.poolWallet(), c.paused(), c.rev(), c.getParams(), c.books(), c.subs(), c.poolWalletStatus(), c.prices(),
+      c.participants(), c.totalPop(), c.totalBought(), c.totalComp(), c.totalRef(), c.beijingDay(),
+    ]);
+    const todayBought: bigint = await c.daySpent(day);
+    const params: InsParams = {
+      minBuy: p.minBuy, maxBuy: p.maxBuy, globalDaily: p.globalDaily, walletDaily: p.walletDaily, directMin: p.directMin,
+      buyFeeBps: Number(p.buyFeeBps), profitFeeBps: Number(p.profitFeeBps), compRatioBps: Number(p.compRatioBps), compCapBps: Number(p.compCapBps),
+      waitDays: Number(p.waitDays), maxDevTicks: Number(p.maxDevTicks), split: [Number(p.splitIns), Number(p.splitEco), Number(p.splitDyn)],
+    };
+    const book = (x: any) => ({ left: BigInt(x.left), inflow: BigInt(x.inflow), outflow: BigInt(x.outflow) });
+    const v: InsView = {
+      address: String(c.target), owner: String(owner), poolWallet: String(wallet), paused: Boolean(paused), rev: BigInt(rev), params,
+      books: [book(bk[0]), book(bk[1]), book(bk[2])], subs: [...subs].map(String),
+      wallet: { balance: ws[0], allowance: ws[1] },
+      stats: { participants: Number(parts), totalPop: tPop, totalBought: tBought, totalComp: tComp, totalRef: tRef, todayBought },
+      price: { ok: Boolean(pr[0]), avg: pr[1], spot: pr[2] },
+      me: null,
+    };
+    if (account) {
+      const t = new E.Contract(this.addr.usdt, ERC20_ABI, this.read);
+      const [raw, q, ui, bal, team] = await Promise.all([c.lotsOf(account), c.quotaLeft(account), c.userInfo(account), t.balanceOf(account), this.insTeam(account)]);
+      const lots: InsLot[] = [...raw]
+        .map((x: any, i: number) => ({
+          // by position: an ethers Result has an .at() method, so the field named "at" cannot be read by name
+          id: i, paid: BigInt(x[0]), bought: BigInt(x[1]), left: BigInt(x[2]), paidLeft: BigInt(x[3]), baseLeft: BigInt(x[4]), at: Number(x[5]),
+          rule: { profitFeeBps: Number(x[6][0]), compRatioBps: Number(x[6][1]), compCapBps: Number(x[6][2]), waitDays: Number(x[6][3]) },
+        }))
+        .filter((l) => l.left > 0n);
+      v.me = {
+        usdt: bal, quotaMine: q[0], quotaNet: q[1], lots, hold: ui[0], directs: Number(ui[1]), levels: Number(ui[2]), earned: ui[3],
+        effective: Boolean(ui[4]), upline: String(ui[5]), team, refRecs: null,
+      };
+    }
+    return v;
+  }
+
+  /** POP that `usdtIn` buys now (spot price, buy fee and pool fee; price impact is left to the slippage margin) */
+  async insQuoteBuy(usdtIn: bigint, buyFeeBps: number): Promise<bigint> {
+    if (usdtIn <= 0n) return 0n;
+    const sp = await this.spotSqrt();
+    const net = (((usdtIn * BigInt(10_000 - buyFeeBps)) / 10_000n) * BigInt(1_000_000 - this.fee)) / 1_000_000n;
+    const usdtIs0 = this.token0.toLowerCase() === this.addr.usdt.toLowerCase();
+    return usdtIs0 ? (net * sp * sp) >> 192n : (net << 192n) / (sp * sp);
+  }
+
+  /** a sale of `popIn` POP of lot `lot`, simulated on chain from this wallet (exact numbers at this moment) */
+  async insSellQuote(account: string, lot: InsLot, popIn: bigint): Promise<InsSellQuote | null> {
+    if (!this.ins || popIn <= 0n || popIn > lot.left) return null;
+    const dl = await this.deadline();
+    const cost = (lot.paidLeft * popIn) / lot.left;
+    try {
+      const r = await this.insRpc.sell.staticCall(lot.id, popIn, 0, dl, { from: account });
+      const toUser = BigInt(r[0]);
+      const comp = BigInt(r[1]);
+      const f = BigInt(lot.rule.profitFeeBps);
+      // toUser = proceeds - fee, fee = (proceeds - cost) x f when there is a profit
+      const proceeds = toUser > cost && f < 10_000n ? (toUser * 10_000n - cost * f) / (10_000n - f) : toUser;
+      return { proceeds, cost, fee: proceeds - toUser, comp, toUser };
+    } catch {
+      return null;
+    }
+  }
+
+  async insBuy(usdtIn: bigint, slipBps: number, rev: bigint, buyFeeBps: number, steps: Step[], on: OnSteps): Promise<boolean> {
+    if (!this.ins) throw new Error("保险池暂未开放");
+    const s = await this.signer();
+    const from = await s.getAddress();
+    const c = new E.Contract(this.ins.target, INS_ABI, s);
+    return this.runSteps(
+      steps,
+      [
+        () => this.approveTo(s, this.addr.usdt, String(this.ins.target), usdtIn), // exactly this purchase
+        async () => {
+          const out = await this.insQuoteBuy(usdtIn, buyFeeBps);
+          const minOut = (out * BigInt(10_000 - slipBps)) / 10_000n;
+          const dl = await this.deadline();
+          await insCheck(() => this.precheck(() => this.insRpc.buy.staticCall(usdtIn, minOut, dl, rev, { from })));
+          return c.buy(usdtIn, minOut, dl, rev);
+        },
+      ],
+      on,
+    );
+  }
+
+  async insSell(lot: InsLot, popIn: bigint, slipBps: number, steps: Step[], on: OnSteps): Promise<boolean> {
+    if (!this.ins) throw new Error("保险池暂未开放");
+    const s = await this.signer();
+    const from = await s.getAddress();
+    const c = new E.Contract(this.ins.target, INS_ABI, s);
+    return this.runSteps(
+      steps,
+      [
+        async () => {
+          const q = await this.insSellQuote(from, lot, popIn);
+          // slippage protection on what the pool pays (before fee and compensation)
+          const minOut = q ? (q.proceeds * BigInt(10_000 - slipBps)) / 10_000n : 0n;
+          const dl = await this.deadline();
+          await insCheck(() => this.precheck(() => this.insRpc.sell.staticCall(lot.id, popIn, minOut, dl, { from })));
+          return c.sell(lot.id, popIn, minOut, dl);
+        },
+      ],
+      on,
+    );
+  }
+
+  async insAdmin(action: InsAdminAction, args: any[], steps: Step[], on: OnSteps): Promise<boolean> {
+    if (!this.ins) throw new Error("保险池暂未开放");
+    const s = await this.signer();
+    const from = await s.getAddress();
+    const c = new E.Contract(this.ins.target, INS_ABI, s);
+    const call = (name: string, a: any[]) => async () => {
+      await insCheck(() => this.precheck(() => this.insRpc[name].staticCall(...a, { from })));
+      return c[name](...a);
+    };
+    const fn = {
+      dailyLimits: call("setDailyLimits", args),
+      rules: call("setRules", args),
+      split: call("setSplit", args),
+      moveBook: call("moveBook", args),
+      adjustBook: call("adjustBook", args),
+      approve: () => new E.Contract(this.addr.usdt, ERC20_ABI, s).approve(this.ins.target, args[0]), // from the pool wallet
+      addSub: call("setSub", [args[0], true]),
+      delSub: call("setSub", [args[0], false]),
+      poolWallet: call("setPoolWallet", args),
+      pause: call("setPaused", [true]),
+      resume: call("setPaused", [false]),
+      refresh: call("refresh", [args]),
+    }[action];
+    return this.runSteps(steps, [fn], on);
+  }
+
+  private async insScan(filter: any, from: number, to: number): Promise<any[]> {
+    const out: any[] = [];
+    for (let end = to; end >= from; end -= this.cfg.logChunk) {
+      const start = Math.max(from, end - this.cfg.logChunk + 1);
+      try {
+        out.push(...(await this.ins.queryFilter(filter, start, end)));
+      } catch (e) {
+        if (this.insRpc === this.ins) throw e;
+        out.push(...(await this.insRpc.queryFilter(filter, start, end)));
+      }
+    }
+    return out;
+  }
+
+  /** referral rewards this wallet received from the insurance pool, newest first */
+  async insRefRecs(account: string, toBlock: number, span: number): Promise<InsRefRec[]> {
+    if (!this.ins) return [];
+    const from = Math.max(this.cfg.insDeployBlock || 0, toBlock - span + 1);
+    const logs = (await this.insScan(this.ins.filters.RefPaid(null, account), from, toBlock)).sort((x, y) => y.blockNumber - x.blockNumber || y.index - x.index);
+    const times = new Map<number, number>();
+    await Promise.all([...new Set(logs.map((l) => l.blockNumber))].map(async (n) => times.set(n, (await this.read.getBlock(n))?.timestamp ?? 0)));
+    return logs.map((l) => ({ level: Number(l.args.level), from: String(l.args.from), amount: BigInt(l.args.amount), time: times.get(l.blockNumber) || 0, tx: l.transactionHash }));
+  }
+
+  private async insRecords(account: string, toBlock: number, span: number): Promise<{ items: Rec[]; nextTo: number | null }> {
+    const base = this.cfg.insDeployBlock || 0;
+    if (!this.ins) return { items: [], nextTo: null };
+    const from = Math.max(base, toBlock - span + 1);
+    const f = this.ins.filters;
+    const [b, so, rp] = await Promise.all([this.insScan(f.Bought(account), from, toBlock), this.insScan(f.Sold(account), from, toBlock), this.insScan(f.RefPaid(null, account), from, toBlock)]);
+    const logs = [...b, ...so, ...rp].sort((x, y) => y.blockNumber - x.blockNumber || y.index - x.index);
+    const times = new Map<number, number>();
+    await Promise.all([...new Set(logs.map((l) => l.blockNumber))].map(async (n) => times.set(n, (await this.read.getBlock(n))?.timestamp ?? 0)));
+    const d = this.dec;
+    const U = (v: bigint) => `${fmtUnits(v, d.usdt)} USDT`;
+    const P = (v: bigint) => `${fmtUnits(v, d.pop)} POP`;
+    const items: Rec[] = logs.map((l) => {
+      const a = l.args;
+      const head = { kind: "ins" as RecKind, time: times.get(l.blockNumber) || 0, tx: l.transactionHash, status: "已完成" as const };
+      if (l.fragment.name === "Bought") {
+        const r = a.rule;
+        return {
+          ...head, title: `保险池 · 买入 ${U(a.paid)}`, sign: "-",
+          lines: [
+            { label: "买入手续费", value: `${U(a.fee)}（进保险池）` },
+            { label: "得到", value: P(a.popOut) },
+            { label: "这笔规则", value: `亏损赔 ${Number(r.compRatioBps) / 100}% · 盈利费 ${Number(r.profitFeeBps) / 100}% · 满 ${Number(r.waitDays)} 天` },
+          ],
+        } as Rec;
+      }
+      if (l.fragment.name === "Sold") {
+        const lines = [{ label: "卖出得到", value: U(a.proceeds) }];
+        if (a.fee > 0n) lines.push({ label: "盈利费", value: `-${U(a.fee)}` });
+        if (a.comp > 0n) lines.push({ label: "保险池赔付", value: `+${U(a.comp)}` });
+        lines.push({ label: "实际到账", value: U(a.proceeds - a.fee + a.comp) });
+        return { ...head, title: `保险池 · 卖出 ${P(a.popIn)}`, sign: "+", lines } as Rec;
+      }
+      return { ...head, title: `保险池推广奖励 · 第 ${Number(a.level)} 代`, sign: "+", lines: [{ label: "到账", value: U(a.amount) }, { label: "来源", value: short(String(a.from)) }] } as Rec;
+    });
+    const nextTo = from > base ? from - 1 : null;
+    return { items, nextTo };
   }
 
   private async lockQueryLogs(filter: any, start: number, end: number): Promise<any[]> {
@@ -1126,6 +1373,7 @@ export class ChainBackend {
 
   async records(account: string, kind: RecKind, toBlock: number, span: number): Promise<{ items: Rec[]; nextTo: number | null }> {
     if (kind === "lock") return this.lockRecords(account, toBlock, span);
+    if (kind === "ins") return this.insRecords(account, toBlock, span);
     const from = Math.max(this.cfg.deployBlock, toBlock - span + 1);
     const f = this.miner.filters;
     let logs: any[] = [];
@@ -1251,13 +1499,44 @@ export class ChainBackend {
   }
 }
 
-const MINER_IFACE = new E.Interface([...MINER_ABI, ...LOCK_ABI.filter((x) => x.startsWith("error ") && !MINER_ABI.includes(x))]);
+const MINER_IFACE = new E.Interface([...MINER_ABI, ...LOCK_ABI.filter((x) => x.startsWith("error ") && !MINER_ABI.includes(x)), ...INS_ABI.filter((x) => x.startsWith("error ") && !MINER_ABI.includes(x) && !LOCK_ABI.includes(x))]);
 
 const RULE_ERRORS = new Set([
   "BadReferrer", "AlreadyBound", "ZeroAmount", "ClaimPaused", "Ended", "PriceUnstable", "Slippage", "Expired",
   "NotRunning", "RewardPriceUnavailable", "FeeOnTransfer", "NothingToClaim", "TooMuchLiquidity",
   "Paused", "BadPlan", "BadCoin", "BadAmount", "OperatorCannotLock",
+  "NotOwner", "NotAdmin", "RulesChanged", "BadLot", "BadConfig", "GlobalLimit", "WalletLimit", "TooManyLots",
 ]);
+
+/** 保险池: the contract's own rule errors in plain words (thrown before any signature is asked) */
+const INS_MSG: Record<string, string> = {
+  RulesChanged: "规则刚被管理员调整过，这笔没有成交，也没有扣钱。请刷新页面看新规则后重新买入",
+  Paused: "保险池暂停新买入，已买的可以照常卖出",
+  GlobalLimit: "今天全网买入额度已用完，明天再来",
+  WalletLimit: "超过你今天的买入额度",
+  BadAmount: "金额或数量不在允许范围内",
+  TooManyLots: "未卖完的已有 64 笔，先卖掉一些再买",
+  PriceUnstable: "POP 价格刚刚被大幅拉动，为防止被夹子攻击，这笔暂不成交，请过几分钟再试",
+  BadLot: "找不到这一笔",
+  NotOwner: "只有保险池主管理员能操作",
+  NotAdmin: "只有保险池主管理员或副管理员能操作",
+  BadConfig: "数字超出允许范围",
+};
+async function insCheck(f: () => Promise<void>): Promise<void> {
+  try {
+    await f();
+  } catch (e: any) {
+    let name = e?.revert?.name || "";
+    const data = e?.data || e?.info?.error?.data;
+    if (!name && typeof data === "string" && data.length >= 10) {
+      try {
+        name = MINER_IFACE.parseError(data)?.name || "";
+      } catch {}
+    }
+    if (INS_MSG[name]) throw new Error(INS_MSG[name]);
+    throw e;
+  }
+}
 
 export function humanError(e: any): string {
   let m = String(e?.shortMessage || e?.reason || e?.message || e);

@@ -97,7 +97,7 @@ export interface OldStatus {
   rewardPrice: bigint | null;
 }
 
-export type RecKind = "liquidity" | "claim" | "dynamic" | "lock";
+export type RecKind = "liquidity" | "claim" | "dynamic" | "lock" | "ins";
 
 export interface Rec {
   kind: RecKind;
@@ -234,4 +234,90 @@ export interface AdminUserRow {
   direct: number;
   indirect: number;
   eligible: boolean;
+}
+
+// ------------------------------------------------------------------ POP 保险池
+export interface InsRule {
+  profitFeeBps: number;
+  compRatioBps: number;
+  compCapBps: number;
+  waitDays: number;
+}
+export interface InsLot {
+  id: number;
+  paid: bigint; // USDT, buy fee included
+  bought: bigint; // POP
+  left: bigint; // POP not sold yet
+  paidLeft: bigint;
+  baseLeft: bigint;
+  at: number; // purchase time (s)
+  rule: InsRule;
+}
+export interface InsParams {
+  minBuy: bigint;
+  maxBuy: bigint;
+  globalDaily: bigint;
+  walletDaily: bigint;
+  directMin: bigint;
+  buyFeeBps: number;
+  profitFeeBps: number;
+  compRatioBps: number;
+  compCapBps: number;
+  waitDays: number;
+  maxDevTicks: number;
+  split: [number, number, number];
+}
+export interface InsBook {
+  left: bigint;
+  inflow: bigint;
+  outflow: bigint;
+}
+/** a wallet's 7 levels below it in the insurance pool (from the automatic check service) */
+export interface InsTeam {
+  levels: { n: number; people: number; inPool: number; hold: bigint }[];
+  directs: { addr: string; hold: bigint }[];
+  people: number;
+  hold: bigint;
+}
+export interface InsRefRec {
+  level: number;
+  from: string;
+  amount: bigint;
+  time: number;
+  tx: string;
+}
+export interface InsView {
+  address: string;
+  owner: string;
+  poolWallet: string;
+  paused: boolean;
+  rev: bigint;
+  params: InsParams;
+  books: [InsBook, InsBook, InsBook];
+  subs: string[];
+  wallet: { balance: bigint; allowance: bigint };
+  stats: { participants: number; totalPop: bigint; totalBought: bigint; totalComp: bigint; totalRef: bigint; todayBought: bigint };
+  price: { ok: boolean; avg: bigint; spot: bigint }; // 1 POP in USDT
+  me: null | {
+    usdt: bigint;
+    quotaMine: bigint;
+    quotaNet: bigint;
+    lots: InsLot[]; // open lots, oldest first
+    hold: bigint;
+    directs: number; // effective directs
+    levels: number;
+    earned: bigint;
+    effective: boolean;
+    upline: string;
+    team: InsTeam | null;
+    refRecs: InsRefRec[] | null; // newest first
+  };
+}
+/** what a sale of `popIn` POP of one lot gives right now (simulated on chain) */
+export interface InsSellQuote {
+  proceeds: bigint;
+  cost: bigint;
+  fee: bigint;
+  comp: bigint;
+  toUser: bigint;
 }

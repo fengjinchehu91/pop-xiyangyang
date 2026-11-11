@@ -1260,6 +1260,9 @@ var DEFAULTS = {
   LOCK: "0x2385EcA629297464FcBFC3eaD93160C00A649e1e",
   // lock contract (XiyangLock2): its Locked events give the team lock totals on the website; empty = off
   LOCK_DEPLOY_BLOCK: 132747421,
+  INS: "0xFae8B3b5CFf10C5cac98b2Bf8Ea48a17355156F1",
+  // POP 保险池 contract (PopInsurance): its Bought / Sold events give the team numbers on the website; empty = off
+  INS_DEPLOY_BLOCK: 133010105,
   CHAIN_ID: 56,
   RPC_URL: "https://bsc-rpc.publicnode.com",
   RPC_URL_2: "https://bsc-dataseed.bnbchain.org",
@@ -1360,6 +1363,8 @@ var T_JOINED = topicOf("Joined(address,address,address,uint256)");
 var T_DEPOSITED = topicOf("Deposited(address,uint256,uint128,uint256,uint256,uint256,uint256,uint256,uint256)");
 var T_WITHDRAWN = topicOf("Withdrawn(address,uint128,uint256,uint256,uint256,uint256)");
 var T_LOCKED = topicOf("Locked(address,uint256,address,uint8,uint16,uint256,uint256,uint256)");
+var T_INS_BOUGHT = topicOf("Bought(address,uint256,address,uint256,uint256,uint256,uint256,(uint16,uint16,uint16,uint16))");
+var T_INS_SOLD = topicOf("Sold(address,uint256,uint256,uint256,uint256,uint256,uint256)");
 function rlp(x) {
   if (Array.isArray(x)) {
     const parts = x.map(rlp);
@@ -1471,6 +1476,8 @@ function config(env) {
     oldMiner: (str("OLD_MINER") || "").toLowerCase(),
     lock: /^0x[0-9a-fA-F]{40}$/.test(str("LOCK") || "") && num("LOCK_DEPLOY_BLOCK") > 0 ? str("LOCK").toLowerCase() : "",
     lockDeployBlock: num("LOCK_DEPLOY_BLOCK"),
+    ins: /^0x[0-9a-fA-F]{40}$/.test(str("INS") || "") && num("INS_DEPLOY_BLOCK") > 0 ? str("INS").toLowerCase() : "",
+    insDeployBlock: num("INS_DEPLOY_BLOCK"),
     chainId: num("CHAIN_ID"),
     rpcs,
     logRpcs: env.LOG_RPC_URLS ? String(env.LOG_RPC_URLS).split(",").map((x) => x.trim()).filter(Boolean) : [.../* @__PURE__ */ new Set([...LOG_RPCS, ...rpcs])],
@@ -1613,6 +1620,69 @@ function lockTeamOf(users, lk, addr, now) {
     for (const k of kids.m.get(a) || []) stack.push(k);
   }
   return { team: team.map(String), network: net.map(String), scanned: lk.scanned, at: now };
+}
+var freshIns = (c) => ({ addr: c.ins, scanned: c.insDeployBlock - 1, chunk: c.logChunk, hold: {}, refs: {} });
+function applyInsLog(ins, l) {
+  if (l.removed) return;
+  const t0 = (l.topics[0] || "").toLowerCase();
+  if (t0 !== T_INS_BOUGHT && t0 !== T_INS_SOLD) return;
+  const u = "0x" + l.topics[1].slice(26).toLowerCase();
+  const w = (i) => BigInt("0x" + (l.data.slice(2 + 64 * i, 2 + 64 * (i + 1)) || "0"));
+  const cur = BigInt(ins.hold[u] || "0");
+  if (t0 === T_INS_BOUGHT) {
+    ins.hold[u] = (cur + w(0)).toString();
+    const r = "0x" + l.topics[3].slice(26).toLowerCase();
+    if (BigInt(r) !== 0n) ins.refs[u] = r;
+  } else {
+    const v = cur - w(2);
+    ins.hold[u] = (v > 0n ? v : 0n).toString();
+  }
+}
+var insKidsMemo = /* @__PURE__ */ new WeakMap();
+function insTeamOf(users, lk, ins, addr) {
+  let kids = insKidsMemo.get(ins);
+  const nRefs = Object.keys(ins.refs).length + (lk ? Object.keys(lk.refs).length : 0);
+  if (!kids || kids.users !== users || kids.nRefs !== nRefs) {
+    const m = /* @__PURE__ */ new Map();
+    const link = (a, r) => {
+      if (!r || r === a) return;
+      if (!m.has(r)) m.set(r, /* @__PURE__ */ new Set());
+      m.get(r).add(a);
+    };
+    for (const a in users) link(a, users[a][2]);
+    if (lk) for (const a in lk.refs) link(a, lk.refs[a]);
+    for (const a in ins.refs) link(a, ins.refs[a]);
+    kids = { users, m, nRefs };
+    insKidsMemo.set(ins, kids);
+  }
+  const me = String(addr).toLowerCase();
+  const held = (a) => BigInt(ins.hold[a] || "0");
+  const seen = /* @__PURE__ */ new Set([me]);
+  let level = [me];
+  const levels = [];
+  let people = 0;
+  let hold = 0n;
+  let directs = [];
+  for (let n = 1; n <= 7; n++) {
+    const next = [];
+    for (const a of level) for (const k of kids.m.get(a) || []) if (!seen.has(k)) {
+      seen.add(k);
+      next.push(k);
+    }
+    let inPool = 0;
+    let h = 0n;
+    for (const a of next) {
+      const x = held(a);
+      if (x > 0n) inPool++;
+      h += x;
+    }
+    levels.push([next.length, inPool, h.toString()]);
+    people += next.length;
+    hold += h;
+    if (n === 1) directs = next.map((a) => [a, held(a)]).sort((x, y) => y[1] > x[1] ? 1 : y[1] < x[1] ? -1 : 0).slice(0, 300).map((x) => [x[0], x[1].toString()]);
+    level = next;
+  }
+  return { levels, directs, people, hold: hold.toString(), scanned: ins.scanned };
 }
 var settleSource = (s) => s.rebuilding && s.usersOld ? s.usersOld : s.users;
 var settleList = (s) => {
@@ -1986,6 +2056,31 @@ async function runOnce(env) {
             st.errors.push("\u8BFB\u53D6\u9501\u4ED3\u8BB0\u5F55\u5931\u8D25\uFF1A" + (e?.message || e));
           }
         } else if (s.lk) delete s.lk;
+        if (c.ins) {
+          try {
+            if (!s.ins || s.ins.addr !== c.ins) s.ins = freshIns(c);
+            const ins = s.ins;
+            let icalls = 0;
+            const maxI = Math.max(1, Math.round(4 * load));
+            while (ins.scanned < to && icalls < maxI && rpc.left > 8) {
+              const from = ins.scanned + 1;
+              const end = Math.min(to, from + ins.chunk - 1);
+              icalls++;
+              let logs;
+              try {
+                logs = await getLogs(from, end, c.ins, [[T_INS_BOUGHT, T_INS_SOLD]]);
+              } catch (e) {
+                if (ins.chunk > 50) ins.chunk = Math.max(50, Math.floor(ins.chunk / 4));
+                throw e;
+              }
+              for (const l of logs) applyInsLog(ins, l);
+              ins.scanned = end;
+              if (ins.chunk < c.logChunk) ins.chunk = Math.min(c.logChunk, ins.chunk * 2);
+            }
+          } catch (e) {
+            st.errors.push("\u8BFB\u53D6\u4FDD\u9669\u6C60\u8BB0\u5F55\u5931\u8D25\uFF1A" + (e?.message || e));
+          }
+        } else if (s.ins) delete s.ins;
       } catch (e) {
         st.errors.push("\u8BFB\u53D6\u7528\u6237\u8BB0\u5F55\u5931\u8D25\uFF1A" + (e?.message || e));
       }
@@ -2211,6 +2306,7 @@ var worker_default = {
       else {
         out = { ok: true, at: s.status?.at ?? null, scanned: s.scanned, ...teamOf(s.users, u) };
         if (s.lk) out.lock = { addr: s.lk.addr, ...lockTeamOf(s.users, s.lk, u, Math.floor(Date.now() / 1e3)) };
+        if (s.ins) out.ins = { addr: s.ins.addr, ...insTeamOf(s.users, s.lk, s.ins, u) };
       }
       return new Response(JSON.stringify(out), {
         headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }

@@ -2,11 +2,13 @@
 //   node deploy/build-deploy.mjs
 //     deploy/deploy.html       <- deploy.template.html + ../deploy-artifact.json       (XiyangMiner)
 //     deploy/deploy-lock.html  <- deploy-lock.template.html + ../deploy-lock-artifact.json (XiyangLock)
+//     deploy/deploy-ins.html   <- deploy-ins.template.html + ../deploy-ins-artifact.json   (PopInsurance)
 import fs from "node:fs";
 const ethers = fs.readFileSync(new URL("../src/vendor/ethers.umd.min.js", import.meta.url), "utf8").replace(/<\/script/gi, "<\\/script");
 for (const [tplName, artName, outName] of [
   ["deploy.template.html", "../deploy-artifact.json", "deploy.html"],
   ["deploy-lock.template.html", "../deploy-lock-artifact.json", "deploy-lock.html"],
+  ["deploy-ins.template.html", "../deploy-ins-artifact.json", "deploy-ins.html"],
 ]) {
   const artUrl = new URL(artName, import.meta.url);
   if (!fs.existsSync(artUrl)) { console.log("skip", outName, "(no", artName + ")"); continue; }

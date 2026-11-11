@@ -1,13 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AppConfig } from "./config";
 import { ChainBackend, humanError, LOCK_COIN_NAME, switchChain, walletAccounts, walletChainId } from "./chain";
+import type { InsAdminAction } from "./chain";
 import { DemoBackend } from "./demo";
-import type { AddQuote, AdminEvent, AdminUserRow, Downline, ExitQuote, LockCoin, LockView, Rec, RecKind, Snapshot, Step, TeamStats } from "./types";
+import type { AddQuote, AdminEvent, AdminUserRow, Downline, ExitQuote, LockCoin, LockView, Rec, RecKind, Snapshot, Step, TeamStats, InsView, InsLot, InsSellQuote, InsRefRec } from "./types";
 import { REASON_TEXT } from "./types";
 import { applySlippage, E18, fmtTime, fmtUnits, parseUnitsSafe, short, usdToToken } from "./fmt";
 
 type Backend = ChainBackend | DemoBackend;
-type Page = "mine" | "lock" | "refer" | "records" | "admin";
+type Page = "ins" | "mine" | "lock" | "refer" | "records" | "admin";
 type SheetKind = null | "add" | "exit" | "claim" | "rules" | "old";
 
 /** basis points -> "1%" / "0.5%" */
@@ -19,6 +20,8 @@ const SLIP_BPS = 100; // 1%
 const ZAP_SLIP_BPS = 500; // "只用 USDT" 添加时的滑点保护 5%（合约先把一半 USDT 换成 POP）
 const addSlip = (mode: "usdt" | "both") => (mode === "usdt" ? ZAP_SLIP_BPS : SLIP_BPS);
 const QUOTE_TTL = 60_000;
+// 用户页面上显示的推荐 / 动态资格门槛固定写 100 USDT；后台改门槛（比如 80）只在管理员后台显示，资格状态仍按合约判断
+const SHOW_THR = 100n * 10n ** 18n;
 
 // =====================================================================================================
 /** setInterval that only runs while the page is on screen; runs once right away when the user comes back */
@@ -57,7 +60,7 @@ export default function App({ cfg }: { cfg: AppConfig }) {
   const [chainId, setChainId] = useState<number | null>(null);
   const [snap, setSnap] = useState<Snapshot | null>(null);
   const [loadErr, setLoadErr] = useState("");
-  const [page, setPage] = useState<Page>(() => (location.hash === "#admin" ? "admin" : (new URLSearchParams(location.search).get("page") as Page) || "mine"));
+  const [page, setPage] = useState<Page>(() => (location.hash === "#admin" ? "admin" : (new URLSearchParams(location.search).get("page") as Page) || "ins"));
   const [recInit, setRecInit] = useState<RecKind | undefined>(undefined); // 记录 page opened on this tab (锁仓 → 查看明细)
   const [sheet, setSheet] = useState<SheetKind>(() => (new URLSearchParams(location.search).get("sheet") as SheetKind) || null);
   const [tick, setTick] = useState(0);
@@ -135,7 +138,20 @@ export default function App({ cfg }: { cfg: AppConfig }) {
   const wrongNet = !demo && !!account && chainId !== null && chainId !== cfg.chainId;
   const canTx = demo || (!!snap?.configured && !!account && !wrongNet);
   const isAdmin = !!snap && !!account && !!snap.owner && snap.owner.toLowerCase() === account.toLowerCase();
-  const showAdmin = isAdmin || demo; // 演示预览里总是显示「管理」按钮，方便查看后台
+  // 保险池主管理员 / 副管理员（浏览图里先用 INS 演示数据；接合约后从合约读）
+  // 保险池主管理员 / 副管理员 (read from the insurance contract)
+  const [insRole, setInsRole] = useState<"owner" | "sub" | "wallet" | null>(null);
+  useEffect(() => {
+    let off = false;
+    setInsRole(null);
+    if (account && snap?.configured !== false) backend.insRole(account).then((r) => !off && setInsRole(r), () => {});
+    return () => {
+      off = true;
+    };
+  }, [backend, account, !!snap]); // eslint-disable-line react-hooks/exhaustive-deps
+  const isInsAdmin = demo || insRole !== null;
+  const showAdmin = isAdmin || isInsAdmin || demo; // 演示预览里总是显示「管理」按钮，方便查看后台
+  const [admTab, setAdmTab] = useState<AdmTab>("mine");
 
   const live = useLive(snap, tick);
 
@@ -143,7 +159,8 @@ export default function App({ cfg }: { cfg: AppConfig }) {
   const [bound, setBound] = useState(false);
   const [demoGate, setDemoGate] = useState(demo && new URLSearchParams(location.search).get("gate") !== "0");
   const me = account.toLowerCase();
-  const isStaff = !!me && [snap?.owner, snap?.operator].some((x) => !!x && x.toLowerCase() === me);
+  // staff never has to bind a referrer: mining owner / operator, and the insurance pool's admins and pool wallet
+  const isStaff = !!me && ([snap?.owner, snap?.operator].some((x) => !!x && x.toLowerCase() === me) || insRole !== null);
   // 旧矿池里本来就没有推荐人的老钱包，沿用原来的情况，直接进入
   const oldTop = !!snap?.old && snap.old.joined && !snap.old.referrer;
   const gate = demo
@@ -195,15 +212,17 @@ export default function App({ cfg }: { cfg: AppConfig }) {
           {snap && page === "mine" && (
             <MinePage cfg={cfg} snap={snap} live={live} account={account} canTx={canTx} onConnect={connect} open={setSheet} goRefer={() => setPage("refer")} />
           )}
+          {snap && page === "ins" && <InsHome snap={snap} backend={backend} account={account} canTx={canTx} onConnect={connect} goRecords={() => { setRecInit("ins"); setPage("records"); }} />}
           {snap && page === "lock" && <LockPage cfg={cfg} snap={snap} account={account} backend={backend} canTx={canTx} onConnect={connect} goRecords={() => { setRecInit("lock"); setPage("records"); }} />}
           {snap && page === "refer" && <ReferPage cfg={cfg} snap={snap} live={live} account={account} backend={backend} onConnect={connect} toast={setToast} />}
           {snap && page === "records" && <RecordsPage cfg={cfg} account={account} backend={backend} onConnect={connect} initial={recInit} />}
-          {snap && page === "admin" && showAdmin && <AdminPage cfg={cfg} snap={snap} backend={backend} demo={demo} isAdmin={isAdmin} adminAccount={account} refresh={refresh} />}
+          {snap && page === "admin" && showAdmin && <AdminPage key={admTab} cfg={cfg} snap={snap} backend={backend} demo={demo} isAdmin={isAdmin} isInsAdmin={isInsAdmin} initialTab={admTab} adminAccount={account} refresh={refresh} />}
         </main>
 
-        <nav className="tabbar">
+        <nav className="tabbar five-t">
           {(
             [
+              ["ins", "保险池", IconShield],
               ["mine", "挖矿", IconPick],
               ["lock", "锁仓", IconLock],
               ["refer", "推荐", IconUsers],
@@ -217,7 +236,7 @@ export default function App({ cfg }: { cfg: AppConfig }) {
           ))}
         </nav>
         {showAdmin && page !== "admin" && (
-          <button className="admin-fab" onClick={() => setPage("admin")}>管理</button>
+          <button className="admin-fab" onClick={() => { setAdmTab(page === "ins" ? "ins" : page === "lock" ? "lock" : "mine"); setPage("admin"); }}>管理</button>
         )}
         </>
         )}
@@ -405,9 +424,9 @@ function OldSheet({ snap, backend, canTx, close, done }: { snap: Snapshot; backe
 const LOCK_SLIP_BPS = 500; // USDT 买入并锁仓：滑点保护 5%
 /** the three ways to lock, shown one under the other */
 const LOCK_WAYS = [
-  { k: "buy", coin: 0 as LockCoin, mode: "usdt" as const, title: "USDT 买入并锁仓", sub: "用 USDT 买喜羊羊，可选 100% 或 80% 锁仓" },
-  { k: "xyy", coin: 0 as LockCoin, mode: "wallet" as const, title: "喜羊羊代币锁仓", sub: "锁钱包里已有的喜羊羊" },
-  { k: "pop", coin: 1 as LockCoin, mode: "wallet" as const, title: "POP 代币锁仓", sub: "锁钱包里已有的 POP" },
+  { k: "buy", coin: 0 as LockCoin, mode: "usdt" as const, title: "USDT 买入并锁仓" },
+  { k: "xyy", coin: 0 as LockCoin, mode: "wallet" as const, title: "喜羊羊代币锁仓" },
+  { k: "pop", coin: 1 as LockCoin, mode: "wallet" as const, title: "POP 代币锁仓" },
 ];
 const LOCK_PLANS = [
   { days: 100, release: "1%", bps: 500, label: "每天释放 1% · 奖励 5%" },
@@ -544,22 +563,18 @@ function LockPage({ cfg, snap, account, backend, canTx, onConnect, goRecords }: 
 
       {me && (
         <section className="card lock-rights">
-          <b>我的锁仓推荐</b>
-          <div className="kv">
-            <div>
-              <span>推荐资格 · 挖矿入金额度 ≥ {usd0(snap.params.thresholdUsd)} USDT</span>
-              <b className={me.canRefer ? "ok-t" : "err"}>{me.canRefer ? "已满足" : "未满足"}</b>
-            </div>
-            <div>
-              <span>团队锁仓</span>
-              {me.team ? <Two v={me.team} snap={snap} /> : <b>统计中…</b>}
-            </div>
-            <div>
-              <span>推荐奖励累计</span>
-              <Two v={me.refReward} snap={snap} />
-            </div>
+          <div className="lr-head">
+            <b>我的锁仓推荐</b>
+            <button className="link-btn" onClick={goRecords}>查看明细 →</button>
           </div>
-          <button className="link-btn" onClick={goRecords}>查看明细 →</button>
+          <div className="lr-cond">
+            <span>推荐资格：LP 挖矿 ≥ {usd0(SHOW_THR)} USDT</span>
+            <b className={me.canRefer ? "ok-t" : "err"}>{me.canRefer ? "已满足" : "未满足"}</b>
+          </div>
+          <div className="lock-two">
+            <div><span>团队锁仓</span>{me.team ? <CoinRows v={me.team} snap={snap} /> : <b>统计中…</b>}</div>
+            <div><span>推荐奖励累计</span><CoinRows v={me.refReward} snap={snap} /></div>
+          </div>
         </section>
       )}
 
@@ -569,7 +584,6 @@ function LockPage({ cfg, snap, account, backend, canTx, onConnect, goRecords }: 
           {LOCK_WAYS.map((w) => (
             <button key={w.k} className={coin === w.coin && (coin === 1 || mode === w.mode) ? "on" : ""} onClick={() => pick(w.coin, w.mode)}>
               <b>{w.title}</b>
-              <span>{w.sub}</span>
             </button>
           ))}
         </div>
@@ -676,12 +690,12 @@ function LockPage({ cfg, snap, account, backend, canTx, onConnect, goRecords }: 
               <section className="card lock-item" key={l.id}>
                 <div className="row-sb">
                   <b>{name(l.coin)} · {l.days} 天 · {fmtUnits(l.amount, dec(l.coin))}</b>
-                  <span className="muted">{fmtTime(l.start).slice(5, 10)} 锁仓</span>
+                  <span className="muted">{fmtCnDay(l.start)} 锁仓</span>
                 </div>
                 <div className="bar"><i style={{ width: `${(periods / l.days) * 100}%` }} /></div>
                 <div className="row-sb fine">
                   <span>已释放 {periods} / {l.days} 次</span>
-                  <span>{periods >= l.days ? "已全部释放" : `下次释放 ${fmtTime(next).slice(5, 16)}`}</span>
+                  <span>{periods >= l.days ? "已全部释放" : `下次释放 ${fmtCnDay(next, true)}`}</span>
                 </div>
               </section>
             );
@@ -692,6 +706,13 @@ function LockPage({ cfg, snap, account, backend, canTx, onConnect, goRecords }: 
   );
 }
 
+/** "11月5日" (or "11月5日 14:30" with the time) */
+function fmtCnDay(sec: number, withTime = false): string {
+  const d = new Date(sec * 1000);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getMonth() + 1}月${d.getDate()}日` + (withTime ? ` ${p(d.getHours())}:${p(d.getMinutes())}` : "");
+}
+
 /** a value per coin, one line each: 喜羊羊 / POP */
 function Two({ v, snap, cls }: { v: [bigint, bigint]; snap: Snapshot; cls?: string }) {
   return (
@@ -699,6 +720,16 @@ function Two({ v, snap, cls }: { v: [bigint, bigint]; snap: Snapshot; cls?: stri
       <span>{fmtUnits(v[0], snap.rewardDecimals)} 喜羊羊</span>
       <span>{fmtUnits(v[1], snap.popDecimals)} POP</span>
     </b>
+  );
+}
+
+/** two coin lines inside a small box: name on the left, amount on the right */
+function CoinRows({ v, snap }: { v: [bigint, bigint]; snap: Snapshot }) {
+  return (
+    <div className="coin-rows">
+      <p><em>喜羊羊</em><b>{fmtUnits(v[0], snap.rewardDecimals)}</b></p>
+      <p><em>POP</em><b>{fmtUnits(v[1], snap.popDecimals)}</b></p>
+    </div>
   );
 }
 
@@ -778,6 +809,784 @@ function LockAdminCard({ snap, backend, account, demo, explorer }: { snap: Snaps
         )}
         <p className="fine">{v.paused ? "现在不能新锁仓；已锁仓的照常释放和领取。" : "暂停后不能新锁仓；已锁仓的照常释放和领取。"}</p>
       </div>
+    </section>
+  );
+}
+
+// =====================================================================================================
+// POP 保险池
+
+const INS_SLIP_BPS = 300; // 买入 / 卖出滑点保护 3%
+const DAY_S = 86400;
+const nowS = () => Math.floor(Date.now() / 1000);
+const minB = (...x: bigint[]) => x.reduce((a, b) => (b < a ? b : a));
+const sgnU = (x: bigint, dec: number) => (x > 0n ? "+" : x < 0n ? "-" : "") + fmtUnits(x < 0n ? -x : x, dec);
+
+function useInsView(backend: Backend, account: string): [InsView | null | undefined, () => void] {
+  const [v, setV] = useState<InsView | null | undefined>(undefined);
+  const [n, setN] = useState(0);
+  useEffect(() => {
+    let off = false;
+    const get = () => backend.insView(account).then((x) => !off && setV(x), () => !off && setV((o) => (o === undefined ? null : o)));
+    get();
+    const id = setInterval(get, 15_000);
+    return () => {
+      off = true;
+      clearInterval(id);
+    };
+  }, [backend, account, n]);
+  return [v, () => setN((x) => x + 1)];
+}
+
+const insEligible = (l: InsLot) => nowS() - l.at >= l.rule.waitDays * DAY_S;
+/** what the pool can really pay right now: the insurance book, the pool wallet's balance and its allowance */
+const insPayable = (v: InsView) => minB(v.books[0].left, v.wallet.balance, v.wallet.allowance);
+
+function IconShield() {
+  return (<svg {...sv}><path d="M12 3l8 3v5c0 5-3.4 8.6-8 10-4.6-1.4-8-5-8-10V6l8-3z" /><path d="M8.5 12l2.5 2.5 4.5-5" /></svg>);
+}
+
+/** 保险池页顶部横幅（用户提供的图） */
+function InsBanner({ days }: { days: number }) {
+  return (
+    <div className="ins-banner">
+      <img className="bg" src={A("ins-hero-bg.svg")} alt="" />
+      <div className="glow" />
+      <img className="art" src={A("ins-hero-sheep.webp")} alt="" />
+      <div className="txt">
+        <h1>
+          买入 POP
+          <br />
+          亏了有赔付
+        </h1>
+        <div className="ins-pill">赚了才收费 · 满 {days} 天可赔付</div>
+      </div>
+    </div>
+  );
+}
+
+function InsHome({ snap, backend, account, canTx, onConnect, goRecords }: { snap: Snapshot; backend: Backend; account: string; canTx: boolean; onConnect: () => void; goRecords: () => void }) {
+  const [v, reload] = useInsView(backend, account);
+  const [sheet, setSheet] = useState<null | "buy" | "sell">(null);
+  const [lot, setLot] = useState<InsLot | null>(null);
+  if (v === undefined)
+    return (
+      <>
+        <InsBanner days={15} />
+        <Loading />
+      </>
+    );
+  if (v === null)
+    return (
+      <>
+        <InsBanner days={15} />
+        <div className="card center muted">保险池暂未开放，敬请期待</div>
+      </>
+    );
+  const p = v.params;
+  const ud = snap.usdtDecimals;
+  const pd = snap.popDecimals;
+  const me = v.me;
+  const one = 10n ** BigInt(pd);
+  const valueOf = (pop: bigint) => (pop * v.price.spot) / one;
+  const lots = me ? me.lots : [];
+  const pop = lots.reduce((s, l) => s + l.left, 0n);
+  const value = valueOf(pop);
+  const cost = lots.reduce((s, l) => s + l.paidLeft, 0n);
+  const pl = value - cost;
+  return (
+    <>
+      <InsBanner days={p.waitDays} />
+      <section className="card reward ins-top">
+        <div className="row-sb">
+          <div className="lbl-light">保险池余额</div>
+          <span className="hero-tag">
+            满 {p.waitDays} 天 · {p.compRatioBps >= 10_000 ? "亏多少赔多少" : `亏损赔 ${pct(p.compRatioBps)}`}
+          </span>
+        </div>
+        <div className="big">
+          {fmtUnits(insPayable(v), ud)} <small>USDT</small>
+        </div>
+        <div className="split">
+          <div>
+            <span>今日我还能买</span>
+            <b>{me ? fmtUnits(me.quotaMine, ud, 0) : "—"} U</b>
+          </div>
+          <div>
+            <span>今日全网还能买</span>
+            <b>{me ? fmtUnits(me.quotaNet, ud, 0) : fmtUnits(p.globalDaily > v.stats.todayBought ? p.globalDaily - v.stats.todayBought : 0n, ud, 0)} U</b>
+          </div>
+        </div>
+        <button className="btn-gold wide" disabled={!!account && (!canTx || v.paused)} onClick={() => (account ? setSheet("buy") : onConnect())}>
+          {v.paused ? "暂停新买入" : "买入 POP"}
+        </button>
+        <p className="fine-light">
+          每笔 {fmtUnits(p.minBuy, ud, 0)}～{fmtUnits(p.maxBuy, ud, 0)} USDT · 买入手续费 {pct(p.buyFeeBps)} · 赚了收盈利的 {pct(p.profitFeeBps)}
+        </p>
+        {v.paused && <p className="fine-light">管理员已暂停新买入，已买的可以照常卖出</p>}
+      </section>
+
+      {!account ? (
+        <div className="card center">
+          <p className="muted">连接钱包后查看你的保险池持仓</p>
+          <button className="btn-gold" onClick={onConnect}>连接钱包</button>
+        </div>
+      ) : (
+        me && (
+          <>
+            <section className="card">
+              <div className="row-h">
+                <IconShield />
+                <span>我的保险池持仓（现值）</span>
+              </div>
+              <div className="val">
+                {fmtUnits(value, ud)} <small>USDT</small>
+              </div>
+              <div className="assets">
+                <span>
+                  <img src={A("pop-coin.webp")} alt="POP" /> {fmtUnits(pop, pd)} POP
+                </span>
+                <span>成本 {fmtUnits(cost, ud)} USDT</span>
+              </div>
+              <div className="prin-row">
+                <span>目前盈亏</span>
+                <b className={pl >= 0n ? "ok-t" : "err-b"}>
+                  {sgnU(pl, ud)} USDT{cost > 0n ? `（${pl >= 0n ? "+" : "-"}${(Number(((pl < 0n ? -pl : pl) * 10_000n) / cost) / 100).toFixed(2)}%）` : ""}
+                </b>
+              </div>
+            </section>
+
+            <div className="ins-sub">我的每一笔（每一笔单独卖出、单独计算）</div>
+            {lots.length === 0 && <div className="card center muted">还没有买入，点上面的「买入 POP」开始</div>}
+            {lots.map((l) => {
+              const ok = insEligible(l);
+              const passed = Math.min(l.rule.waitDays, Math.max(0, Math.floor((nowS() - l.at) / DAY_S)));
+              const dleft = l.rule.waitDays - passed;
+              const val = valueOf(l.left);
+              const d = val - l.paidLeft;
+              return (
+                <section className="card lock-item" key={l.id}>
+                  <div className="row-sb">
+                    <b>
+                      {fmtCnDay(l.at)} 买入 · {fmtUnits(l.paid, ud, 0)} U
+                    </b>
+                    <span className={"pill " + (ok ? "ok" : "no")}>{ok ? "✓ 已可赔付" : `还有 ${dleft} 天可赔`}</span>
+                  </div>
+                  <div className="bar">
+                    <i style={{ width: `${(passed / l.rule.waitDays) * 100}%` }} />
+                  </div>
+                  <div className="ins-lot-nums">
+                    <div>
+                      <span>剩余</span>
+                      <b>
+                        {fmtUnits(l.left, pd)} <small>POP</small>
+                      </b>
+                    </div>
+                    <div>
+                      <span>现值</span>
+                      <b>
+                        {fmtUnits(val, ud)} <small>U</small> <em className={d >= 0n ? "ok-t" : "err-b"}>{sgnU(d, ud)}</em>
+                      </b>
+                    </div>
+                  </div>
+                  <button className="btn-green wide ins-lot-sell" disabled={!canTx} onClick={() => { setLot(l); setSheet("sell"); }}>
+                    卖出这笔
+                  </button>
+                </section>
+              );
+            })}
+
+            <InsRefer v={v} snap={snap} backend={backend} account={account} goRecords={goRecords} />
+          </>
+        )
+      )}
+      {sheet === "buy" && <InsBuySheet v={v} snap={snap} backend={backend} close={() => setSheet(null)} done={reload} />}
+      {sheet === "sell" && lot && <InsSellSheet v={v} snap={snap} backend={backend} account={account} lot={lot} close={() => setSheet(null)} done={reload} />}
+    </>
+  );
+}
+
+function InsRefer({ v, snap, backend, account, goRecords }: { v: InsView; snap: Snapshot; backend: Backend; account: string; goRecords: () => void }) {
+  const [allT, setAllT] = useState(false);
+  const [allD, setAllD] = useState(false);
+  const [allR, setAllR] = useState(false);
+  const [recs, setRecs] = useState<InsRefRec[] | null>(null);
+  useEffect(() => {
+    let off = false;
+    backend
+      .latestBlock()
+      .then((b) => backend.insRefRecs(account, b, 200_000))
+      .then((r) => !off && setRecs(r), () => !off && setRecs([]));
+    return () => {
+      off = true;
+    };
+  }, [backend, account]);
+  const me = v.me!;
+  const p = v.params;
+  const ud = snap.usdtDecimals;
+  const team = me.team;
+  const More = ({ on, set, label }: { on: boolean; set: (x: boolean) => void; label: string }) => (
+    <button className="more-btn" onClick={() => set(!on)}>
+      {on ? "收起 ▴" : `${label} ▾`}
+    </button>
+  );
+  const levels = team ? team.levels : [];
+  const ts = allT ? levels : levels.slice(0, 2);
+  const directs = team ? team.directs : [];
+  const ds = allD ? directs : directs.slice(0, 2);
+  const rs = recs ? (allR ? recs : recs.slice(0, 2)) : [];
+  return (
+    <>
+      <section className="card">
+        <div className="row-h">
+          <IconUsers />
+          <span>我的保险池推荐</span>
+        </div>
+        <div className="counts three">
+          <div><span>有效直推</span><b>{me.directs}</b></div>
+          <div><span>已开代数</span><b>{me.levels}<small> / 7</small></b></div>
+          <div><span>累计推广奖励</span><b>{fmtUnits(me.earned, ud)}</b><span>USDT</span></div>
+        </div>
+        <p className="fine">有效直推 = 直推在保险池持仓 ≥ {fmtUnits(p.directMin, ud, 0)} U。有几个有效直推就开几代，最多 7 代；每代拿下级盈利的 {pct(Math.floor((p.profitFeeBps * p.split[2]) / (p.split[0] + p.split[1] + p.split[2] || 1) / 7))}。</p>
+      </section>
+
+      <section className="card">
+        <div className="row-h">
+          <IconLayers />
+          <span>网体关系（7 代）</span>
+        </div>
+        {!team ? (
+          <p className="fine">统计中…（自动检查程序读取链上记录后显示）</p>
+        ) : (
+          <>
+            <div className="ins-team">
+              {ts.map((l) => (
+                <div key={l.n} className={l.n <= me.levels ? "" : "off"}>
+                  <b>第 {l.n} 代</b>
+                  <span>
+                    {l.people} 人<small>在保险池 {l.inPool} 人</small>
+                  </span>
+                  <em>{fmtUnits(l.hold, ud, 0)} U</em>
+                  <i className={"pill " + (l.n <= me.levels ? "ok" : "no")}>{l.n <= me.levels ? "已开" : "未开"}</i>
+                </div>
+              ))}
+            </div>
+            <More on={allT} set={setAllT} label="展开全部 7 代" />
+            <div className="kv ins-team-sum">
+              <div><span>团队总人数</span><b>{team.people} 人</b></div>
+              <div><span>团队保险池总持仓</span><b>{fmtUnits(team.hold, ud, 0)} U</b></div>
+            </div>
+          </>
+        )}
+        <p className="fine">推荐关系和喜羊羊矿场是同一套绑定；这里只统计保险池的持仓（按买入成本）。</p>
+      </section>
+
+      <section className="card list">
+        <div className="row-sb ins-list-h">
+          <b>我的直推（{team ? directs.length : "—"} 人）</b>
+        </div>
+        {team && directs.length === 0 && <div className="center muted ins-empty">还没有直推</div>}
+        {ds.map((d) => (
+          <div className="li" key={d.addr}>
+            <div className="av"><IconUser /></div>
+            <div className="grow">
+              <b className="mono">{short(d.addr)}</b>
+              <div className="fine">保险池持仓 {d.hold > 0n ? `${fmtUnits(d.hold, ud, 0)} U` : "没参与"}</div>
+            </div>
+            <span className={"pill " + (d.hold >= p.directMin ? "ok" : "no")}>{d.hold >= p.directMin ? "有效" : d.hold > 0n ? `未达 ${fmtUnits(p.directMin, ud, 0)} U` : "未参与"}</span>
+          </div>
+        ))}
+        {directs.length > 2 && <More on={allD} set={setAllD} label={`展开全部 ${directs.length} 人`} />}
+      </section>
+
+      <section className="card list">
+        <div className="row-sb ins-list-h">
+          <b>推广奖励记录</b>
+          <button className="link-btn" onClick={goRecords}>查看全部 →</button>
+        </div>
+        {!recs && <div className="center muted ins-empty">加载中…</div>}
+        {recs && recs.length === 0 && <div className="center muted ins-empty">还没有推广奖励</div>}
+        {rs.map((r) => (
+          <div className="li rec" key={r.tx + r.level}>
+            <div className="rec-ic in">+</div>
+            <div className="grow">
+              <b>第 {r.level} 代 · +{fmtUnits(r.amount, ud)} USDT</b>
+              <div className="fine">来自 {short(r.from)}</div>
+              <div className="fine">{fmtCnDay(r.time, true)}</div>
+            </div>
+          </div>
+        ))}
+        {recs && recs.length > 2 && <More on={allR} set={setAllR} label="展开" />}
+      </section>
+    </>
+  );
+}
+
+function InsBuySheet({ v, snap, backend, close, done }: { v: InsView; snap: Snapshot; backend: Backend; close: () => void; done: () => void }) {
+  const p = v.params;
+  const ud = snap.usdtDecimals;
+  const me = v.me!;
+  const [txt, setTxt] = useState("");
+  const [steps, setSteps] = useState<Step[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [popOut, setPopOut] = useState<bigint | null>(null);
+  const x = parseUnitsSafe(txt, ud) ?? 0n;
+  const fee = (x * BigInt(p.buyFeeBps)) / 10_000n;
+  const bad = !x
+    ? ""
+    : x < p.minBuy || x > p.maxBuy
+      ? `每笔 ${fmtUnits(p.minBuy, ud, 0)}～${fmtUnits(p.maxBuy, ud, 0)} USDT`
+      : x > me.quotaMine
+        ? `超过你今天的剩余额度 ${fmtUnits(me.quotaMine, ud, 0)} USDT`
+        : x > me.usdt
+          ? "USDT 余额不足"
+          : "";
+  useEffect(() => {
+    let off = false;
+    setPopOut(null);
+    if (x > 0n && !bad) backend.insQuoteBuy(x, p.buyFeeBps).then((o) => !off && setPopOut(o), () => {});
+    return () => {
+      off = true;
+    };
+  }, [txt]); // eslint-disable-line react-hooks/exhaustive-deps
+  const go = async () => {
+    const st: Step[] = [
+      { label: `授权 ${fmtUnits(x, ud)} USDT（只授权这一笔的金额）`, status: "idle" },
+      { label: "买入 POP", status: "idle" },
+    ];
+    setSteps(st);
+    setBusy(true);
+    try {
+      if (await backend.insBuy(x, INS_SLIP_BPS, v.rev, p.buyFeeBps, st, setSteps)) done();
+    } catch (e) {
+      setSteps([{ ...st[0], status: "error", error: humanError(e) }]);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const quick = [200, 500, 1000, 2000].map((a) => BigInt(a) * 10n ** BigInt(ud)).filter((a) => a >= p.minBuy && a <= p.maxBuy);
+  return (
+    <Sheet title="买入 POP" close={close} icon={<IconShield />}>
+      <label className="inp">
+        <span>
+          买入金额 <em>余额 {fmtUnits(me.usdt, ud)} USDT</em>
+        </span>
+        <div className="unit-in">
+          <input inputMode="decimal" placeholder={`请输入 ${fmtUnits(p.minBuy, ud, 0)}～${fmtUnits(p.maxBuy, ud, 0)}`} value={txt} onChange={(e) => { setTxt(e.target.value); setSteps(null); }} />
+          <em>USDT</em>
+        </div>
+      </label>
+      {quick.length > 0 && (
+        <div className="pct-row">
+          {quick.map((a) => (
+            <button key={String(a)} className={x === a ? "on" : ""} onClick={() => { setTxt(fmtUnits(a, ud, 0).replace(/,/g, "")); setSteps(null); }}>
+              {fmtUnits(a, ud, 0).replace(/,/g, "")}
+            </button>
+          ))}
+        </div>
+      )}
+      {x > 0n && !bad && (
+        <div className="quote ins-q">
+          <div className="qr-row"><span>买入手续费 {pct(p.buyFeeBps)}（进保险池）</span><b>{fmtUnits(fee, ud)} USDT</b></div>
+          <div className="qr-row"><span>实际买币</span><b>{fmtUnits(x - fee, ud)} USDT</b></div>
+          <div className="qr-row"><span>预计得到</span><b className="big-d">{popOut === null ? "…" : `${fmtUnits(popOut, snap.popDecimals)} POP`}</b></div>
+        </div>
+      )}
+      {bad && <p className="err ins-err">{bad}</p>}
+      <div className="note-gold ins-note">
+        这一笔的规则买入时就定下：持有满 {p.waitDays} 天后卖出，{p.compRatioBps >= 10_000 ? "亏多少赔多少" : `亏损赔 ${pct(p.compRatioBps)}`}
+        {p.compCapBps < 10_000 ? `（每笔最多赔本金的 ${pct(p.compCapBps)}）` : ""}；赚了收盈利的 {pct(p.profitFeeBps)}。以后后台改数字，不影响这一笔。
+      </div>
+      {steps && <Steps steps={steps} />}
+      {steps && steps.every((s) => s.status === "done" || s.status === "skipped") ? (
+        <button className="btn-gold wide" onClick={close}>完成</button>
+      ) : (
+        <button className="btn-gold wide" disabled={!x || !!bad || busy || v.paused} onClick={go}>
+          {busy ? "处理中…" : "买入"}
+        </button>
+      )}
+      <p className="fine">今天你还能买 {fmtUnits(me.quotaMine, ud, 0)} USDT · 全网还能买 {fmtUnits(me.quotaNet, ud, 0)} USDT · 滑点保护 {pct(INS_SLIP_BPS)}</p>
+    </Sheet>
+  );
+}
+
+function InsLotHead({ l, ud }: { l: InsLot; ud: number }) {
+  const ok = insEligible(l);
+  const dleft = l.rule.waitDays - Math.min(l.rule.waitDays, Math.max(0, Math.floor((nowS() - l.at) / DAY_S)));
+  return (
+    <div className="ins-lot-head">
+      <div className="row-sb">
+        <b>{fmtCnDay(l.at)} 买入 · {fmtUnits(l.paid, ud, 0)} U</b>
+        <span className={"pill " + (ok ? "ok" : "no")}>{ok ? "✓ 已可赔付" : `还有 ${dleft} 天可赔`}</span>
+      </div>
+      <div className="fine">这笔规则：亏损赔 {pct(l.rule.compRatioBps)} · 盈利费 {pct(l.rule.profitFeeBps)} · 满 {l.rule.waitDays} 天</div>
+    </div>
+  );
+}
+
+function InsSellSheet({ v, snap, backend, account, lot, close, done }: { v: InsView; snap: Snapshot; backend: Backend; account: string; lot: InsLot; close: () => void; done: () => void }) {
+  const ud = snap.usdtDecimals;
+  const pd = snap.popDecimals;
+  const [txt, setTxt] = useState("");
+  const [exact, setExact] = useState<bigint | null>(null); // amount picked with a % button (no rounding)
+  const [steps, setSteps] = useState<Step[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [q, setQ] = useState<InsSellQuote | null | undefined>(undefined);
+  const typed = parseUnitsSafe(txt, pd) ?? 0n;
+  const amt = exact !== null && txt === fmtUnits(exact, pd, 6).replace(/,/g, "") ? exact : typed;
+  const over = amt > lot.left;
+  const ok = insEligible(lot);
+  useEffect(() => {
+    let off = false;
+    setQ(undefined);
+    if (amt > 0n && !over) {
+      const t = setTimeout(() => backend.insSellQuote(account, lot, amt).then((r) => !off && setQ(r), () => !off && setQ(null)), 300);
+      return () => {
+        off = true;
+        clearTimeout(t);
+      };
+    }
+    return () => {
+      off = true;
+    };
+  }, [txt, exact]); // eslint-disable-line react-hooks/exhaustive-deps
+  const pick = (k: bigint) => {
+    const a = k === 100n ? lot.left : (lot.left * k) / 100n;
+    setExact(a);
+    setTxt(fmtUnits(a, pd, 6).replace(/,/g, ""));
+    setSteps(null);
+  };
+  const go = async () => {
+    const st: Step[] = [{ label: `卖出 ${fmtUnits(amt, pd)} POP`, status: "idle" }];
+    setSteps(st);
+    setBusy(true);
+    try {
+      if (await backend.insSell(lot, amt, INS_SLIP_BPS, st, setSteps)) done();
+    } catch (e) {
+      setSteps([{ ...st[0], status: "error", error: humanError(e) }]);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const pl = q ? q.proceeds - q.cost : 0n;
+  return (
+    <Sheet title="卖出这笔" close={close} icon={<IconShield />}>
+      <InsLotHead l={lot} ud={ud} />
+      <label className="inp">
+        <span>
+          卖出数量 <em>这笔可卖 {fmtUnits(lot.left, pd)} POP</em>
+        </span>
+        <div className="unit-in">
+          <input inputMode="decimal" placeholder="请输入卖出数量" value={txt} onChange={(e) => { setTxt(e.target.value); setExact(null); setSteps(null); }} />
+          <em>POP</em>
+        </div>
+      </label>
+      <div className="pct-row">
+        {[25n, 50n, 75n, 100n].map((k) => (
+          <button key={String(k)} onClick={() => pick(k)}>
+            {String(k)}%
+          </button>
+        ))}
+      </div>
+      {over && <p className="err ins-err">超过这笔的剩余数量</p>}
+      {amt > 0n && !over && (
+        <div className="quote ins-q">
+          {q === undefined && <div className="qr-row"><span>正在计算…</span><b /></div>}
+          {q === null && <div className="qr-row"><span>暂时算不出，请稍后再试</span><b /></div>}
+          {q && (
+            <>
+              <div className="qr-row"><span>预计卖出得到</span><b>{fmtUnits(q.proceeds, ud)} USDT</b></div>
+              <div className="qr-row"><span>这部分的成本</span><b>{fmtUnits(q.cost, ud)} USDT</b></div>
+              <div className="qr-row"><span>盈亏</span><b className={pl >= 0n ? "ok-t" : "err-b"}>{sgnU(pl, ud)} USDT</b></div>
+              {q.fee > 0n && <div className="qr-row"><span>盈利费 {pct(lot.rule.profitFeeBps)}</span><b className="err-b">-{fmtUnits(q.fee, ud)} USDT</b></div>}
+              <div className="qr-row">
+                <span>保险池赔付</span>
+                <b className={q.comp > 0n ? "ok-t" : ""}>{q.comp > 0n ? `+${fmtUnits(q.comp, ud)} USDT` : pl >= 0n ? "赚了，不用赔" : ok ? "按平均价没亏，不赔" : `没满 ${lot.rule.waitDays} 天，不赔`}</b>
+              </div>
+              <div className="qr-row"><span>实际到账</span><b className="big-d">{fmtUnits(q.toUser + q.comp, ud)} USDT</b></div>
+            </>
+          )}
+        </div>
+      )}
+      <div className="note-gold ins-note">
+        {ok
+          ? `这笔已满 ${lot.rule.waitDays} 天：亏了按卖出价和 15 分钟平均价里亏得少的那个赔，买入手续费不赔。赔付最多赔到保险池现在的余额 ${fmtUnits(insPayable(v), ud)} USDT。`
+          : `这笔还没满 ${lot.rule.waitDays} 天：现在卖出亏了不赔，赚了照样收盈利费。`}
+      </div>
+      {steps && <Steps steps={steps} />}
+      {steps && steps.every((s) => s.status === "done" || s.status === "skipped") ? (
+        <button className="btn-green wide" onClick={close}>完成</button>
+      ) : (
+        <button className="btn-green wide" disabled={!amt || over || busy} onClick={go}>
+          {busy ? "处理中…" : "卖出"}
+        </button>
+      )}
+      <p className="fine">滑点保护 {pct(INS_SLIP_BPS)} · 实际以链上成交为准</p>
+    </Sheet>
+  );
+}
+
+function F({ label, value, set, unit, ro }: { label: string; value: string; set: (s: string) => void; unit: string; ro?: boolean }) {
+  return (
+    <label className="inp">
+      <span>{label}</span>
+      <div className="unit-in sm">
+        <input inputMode="decimal" value={value} readOnly={ro} onChange={(e) => set(e.target.value)} />
+        <em>{unit}</em>
+      </div>
+    </label>
+  );
+}
+
+const BOOK_NAME = ["保险账", "生态账", "动态账"];
+const BOOK_NOTE = ["买入手续费 + 盈利费 5 份 · 用来赔付", "盈利费 3 份 · 你自己支配", "盈利费 7 份里没人拿的"];
+
+function InsAdminCard({ snap, backend, account, demo }: { snap: Snapshot; backend: Backend; account: string; demo: boolean }) {
+  const [v, reload] = useInsView(backend, "");
+  const [demoRole, setDemoRole] = useState<"main" | "sub">("main");
+  const [steps, setSteps] = useState<Step[] | null>(null);
+  const [copied, setCopied] = useState("");
+  const ud = snap.usdtDecimals;
+  const u0 = (x: bigint) => fmtUnits(x, ud, 0).replace(/,/g, "");
+  const p = v?.params;
+  const [lim, setLim] = useState<[string, string]>(["", ""]);
+  const [rules, setRules] = useState<string[]>([]);
+  const [split, setSplit] = useState<string[]>([]);
+  const [mv, setMv] = useState<[string, string, string]>(["1", "0", ""]);
+  const [adj, setAdj] = useState<[string, string]>(["0", ""]);
+  const [appr, setAppr] = useState("");
+  const [newSub, setNewSub] = useState("");
+  const [newWallet, setNewWallet] = useState("");
+  useEffect(() => {
+    if (!p) return;
+    setLim([u0(p.globalDaily), u0(p.walletDaily)]);
+    setRules([u0(p.minBuy), u0(p.maxBuy), String(p.buyFeeBps / 100), String(p.profitFeeBps / 100), String(p.compRatioBps / 100), String(p.compCapBps / 100), String(p.waitDays), u0(p.directMin)]);
+    setSplit(p.split.map(String));
+  }, [v?.rev, v?.params.split.join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (v === undefined) return <Loading />;
+  if (v === null) return <div className="card center muted">保险池合约还没有配置</div>;
+  const isOwner = !!account && account.toLowerCase() === v.owner.toLowerCase();
+  const isSubW = !!account && v.subs.some((s) => s.toLowerCase() === account.toLowerCase());
+  const isWallet = !!account && account.toLowerCase() === v.poolWallet.toLowerCase();
+  const main = demo ? demoRole === "main" : isOwner;
+  const canLimits = demo || isOwner || isSubW;
+  const act = async (a: InsAdminAction, args: any[], label: string) => {
+    const st: Step[] = [{ label, status: "idle" }];
+    setSteps(st);
+    try {
+      if (await backend.insAdmin(a, args, st, setSteps)) reload();
+    } catch (e) {
+      setSteps([{ ...st[0], status: "error", error: humanError(e) }]);
+    }
+  };
+  const U = (s: string) => parseUnitsSafe(s, ud);
+  const bps = (s: string) => Math.round(Number(s) * 100);
+  const limErr = !U(lim[0]) && lim[0] !== "0" ? "请填写全网每天限额" : !U(lim[1]) && lim[1] !== "0" ? "请填写每个钱包每天限额" : "";
+  const r = rules;
+  const ruleErr =
+    r.length < 8 ? "" :
+    !U(r[0]) || !U(r[1]) || (U(r[1]) ?? 0n) < (U(r[0]) ?? 0n) ? "每笔最少 / 最多填写有误（最多不能小于最少）" :
+    !(bps(r[2]) >= 0 && bps(r[2]) <= 1000) ? "买入手续费 0～10%" :
+    !(bps(r[3]) >= 0 && bps(r[3]) <= 5000) ? "盈利费 0～50%" :
+    !(bps(r[4]) >= 0 && bps(r[4]) <= 10_000) ? "赔付比例 0～100%" :
+    !(bps(r[5]) >= 0 && bps(r[5]) <= 10_000) ? "每笔最多赔本金 0～100%" :
+    !(Number(r[6]) >= 1 && Number(r[6]) <= 3650 && Number.isInteger(Number(r[6]))) ? "持有天数填 1～3650 的整数" :
+    U(r[7]) === null ? "请填写有效直推门槛" : "";
+  const splitErr = split.some((x) => !/^\d+$/.test(x) || Number(x) > 255) || split.reduce((s, x) => s + Number(x || 0), 0) === 0 ? "分配请填 0～255 的整数，不能全是 0" : "";
+  const copy = (a: string) => navigator.clipboard?.writeText(a).then(() => { setCopied(a); setTimeout(() => setCopied(""), 1500); });
+  return (
+    <section className="card btn-col ins-admin">
+      <b>保险池</b>
+      {demo && (
+        <div className="seg">
+          <button className={main ? "on" : ""} onClick={() => setDemoRole("main")}>主管理员看到的</button>
+          <button className={!main ? "on" : ""} onClick={() => setDemoRole("sub")}>副管理员看到的</button>
+        </div>
+      )}
+      {!demo && !isOwner && !isSubW && !isWallet && <div className="alert warn">当前钱包不是保险池的主管理员或副管理员，链上会拒绝操作。</div>}
+      {!demo && isWallet && !isOwner && <div className="alert warn">当前是资金池钱包：只能给合约授权，其他设置要用主管理员钱包。</div>}
+
+      {[["主管理员", v.owner], ["资金池钱包", v.poolWallet], ["保险池合约", v.address]].map(([t, a]) => (
+        <div className="lock-addr" key={t}>
+          <span>{t}</span>
+          <div className="row-sb">
+            <span className="mono addr-wrap">{a}</span>
+            <button className="btn-mini" onClick={() => copy(a)}>{copied === a ? "已复制" : "复制"}</button>
+          </div>
+        </div>
+      ))}
+      <div className="kv">
+        <div><span>状态</span><b className={v.paused ? "err" : "ok-t"}>{v.paused ? "已暂停新买入" : "正常买入中"}</b></div>
+        <div><span>资金池钱包余额</span><b>{fmtUnits(v.wallet.balance, ud)} USDT</b></div>
+        <div><span>给合约的剩余授权</span><b>{fmtUnits(v.wallet.allowance, ud)} USDT</b></div>
+        <div><span>现在最多能赔</span><b>{fmtUnits(insPayable(v), ud)} USDT</b></div>
+      </div>
+
+      <div className="ins-books">
+        {v.books.map((b, i) => (
+          <div key={i}>
+            <div className="row-sb">
+              <span>{BOOK_NAME[i]}</span>
+              <b>{fmtUnits(b.left, ud)} <small>USDT</small></b>
+            </div>
+            <em>{BOOK_NOTE[i]}</em>
+            <p>累计进账 {fmtUnits(b.inflow, ud)} · {i === 0 ? "已赔付" : i === 2 ? "已支出" : "已支出"} {fmtUnits(b.outflow, ud)}</p>
+          </div>
+        ))}
+      </div>
+      <p className="fine">三本账的钱都在资金池钱包里，合约只记账。赔付最多赔到「保险账剩余、钱包余额、剩余授权」里最小的那个。</p>
+
+      <div className="kv ins-stats">
+        <div><span>参与人数</span><b>{v.stats.participants} 人</b></div>
+        <div><span>合约里的 POP</span><b>{fmtUnits(v.stats.totalPop, snap.popDecimals)} POP</b></div>
+        <div><span>今日全网已买</span><b>{fmtUnits(v.stats.todayBought, ud, 0)} / {fmtUnits(v.params.globalDaily, ud, 0)} USDT</b></div>
+        <div><span>累计买入</span><b>{fmtUnits(v.stats.totalBought, ud)} USDT</b></div>
+        <div><span>累计赔付</span><b>{fmtUnits(v.stats.totalComp, ud)} USDT</b></div>
+        <div><span>累计推广奖励</span><b>{fmtUnits(v.stats.totalRef, ud)} USDT</b></div>
+      </div>
+
+      <div className="adm-group">
+        <b>每天限额 <em className="ins-who">主、副管理员都能改</em></b>
+        <div className="grid-in">
+          <F label="全网每天" value={lim[0]} set={(x) => setLim([x, lim[1]])} unit="U" ro={!canLimits} />
+          <F label="每个钱包每天" value={lim[1]} set={(x) => setLim([lim[0], x])} unit="U" ro={!canLimits} />
+        </div>
+        {limErr && <p className="err">{limErr}</p>}
+        <button className="btn-gold wide" disabled={!canLimits || !!limErr} onClick={() => act("dailyLimits", [U(lim[0]) ?? 0n, U(lim[1]) ?? 0n], `保存每天限额：全网 ${lim[0]} U，每个钱包 ${lim[1]} U`)}>
+          保存每天限额
+        </button>
+      </div>
+
+      <div className="adm-group">
+        <b>买入与赔付规则 <em className="ins-who">{main ? "只有主管理员能改" : "只能看，只有主管理员能改"}</em></b>
+        {r.length === 8 && (
+          <div className="grid-in">
+            {[["每笔最少", "U"], ["每笔最多", "U"], ["买入手续费", "%"], ["盈利费", "%"], ["赔付比例", "%"], ["每笔最多赔本金的", "%"], ["持有多少天后才赔", "天"], ["有效直推门槛", "U"]].map(([lb, un], i) => (
+              <F key={lb} label={lb} value={r[i]} set={(x) => setRules(r.map((y, j) => (j === i ? x : y)))} unit={un} ro={!main} />
+            ))}
+          </div>
+        )}
+        {main && ruleErr && <p className="err">{ruleErr}</p>}
+        {main && (
+          <button
+            className="btn-gold wide"
+            disabled={!!ruleErr}
+            onClick={() => act("rules", [U(r[0]), U(r[1]), bps(r[2]), bps(r[3]), bps(r[4]), bps(r[5]), Number(r[6]), U(r[7])], `保存规则：每笔 ${r[0]}～${r[1]} U，手续费 ${r[2]}%，盈利费 ${r[3]}%，赔付 ${r[4]}%，封顶 ${r[5]}%，满 ${r[6]} 天，有效直推 ${r[7]} U`)}
+          >
+            保存规则
+          </button>
+        )}
+        <div className="ins-split">
+          <span>盈利费分配</span>
+          <div className="grid-in three">
+            {["保险", "生态", "动态"].map((lb, i) => (
+              <F key={lb} label={lb} value={split[i] ?? ""} set={(x) => setSplit(split.map((y, j) => (j === i ? x : y)))} unit="份" ro={!main} />
+            ))}
+          </div>
+        </div>
+        {main && splitErr && <p className="err">{splitErr}</p>}
+        {main && (
+          <button className="btn-line wide" disabled={!!splitErr} onClick={() => act("split", split.map(Number), `保存盈利费分配 ${split.join(":")}`)}>
+            保存分配
+          </button>
+        )}
+        <p className="fine">规则只影响之后的新买入，已经买的那些笔还按买入时的规则。买入手续费最高 10%，盈利费最高 50%。用户正在下单时改了规则，那一笔会自动失败、不扣钱。</p>
+      </div>
+
+      {(main || isWallet) && (
+          <div className="adm-group">
+            <b>资金池钱包给合约授权</b>
+            <div className="unit-in">
+              <input inputMode="decimal" placeholder="例如 20000" value={appr} onChange={(e) => setAppr(e.target.value)} />
+              <em>USDT</em>
+            </div>
+            <button className="btn-gold wide" disabled={(!demo && !isWallet) || !U(appr)} onClick={() => act("approve", [U(appr)], `资金池钱包授权合约 ${appr} USDT`)}>
+              授权 / 补充授权
+            </button>
+            <p className="fine">{isWallet || demo ? "" : "要用资金池钱包连接网站才能操作。"}固定额度，会替换当前授权；合约只能按规则从这里扣钱赔付。</p>
+          </div>
+
+      )}
+      {main && (
+        <>
+          <div className="adm-group">
+            <b>调整账目</b>
+            <div className="grid-in">
+              <label className="inp">
+                <span>从</span>
+                <select className="sel" value={mv[0]} onChange={(e) => setMv([e.target.value, mv[1], mv[2]])}>
+                  {BOOK_NAME.map((n, i) => <option key={i} value={i}>{n}</option>)}
+                </select>
+              </label>
+              <label className="inp">
+                <span>划到</span>
+                <select className="sel" value={mv[1]} onChange={(e) => setMv([mv[0], e.target.value, mv[2]])}>
+                  {BOOK_NAME.map((n, i) => <option key={i} value={i}>{n}</option>)}
+                </select>
+              </label>
+            </div>
+            <div className="unit-in">
+              <input inputMode="decimal" placeholder="划转金额" value={mv[2]} onChange={(e) => setMv([mv[0], mv[1], e.target.value])} />
+              <em>USDT</em>
+            </div>
+            <button className="btn-line wide" disabled={mv[0] === mv[1] || !U(mv[2])} onClick={() => act("moveBook", [Number(mv[0]), Number(mv[1]), U(mv[2])], `从${BOOK_NAME[Number(mv[0])]}划 ${mv[2]} USDT 到${BOOK_NAME[Number(mv[1])]}`)}>
+              划转
+            </button>
+            <div className="grid-in">
+              <label className="inp">
+                <span>直接改数字</span>
+                <select className="sel" value={adj[0]} onChange={(e) => setAdj([e.target.value, adj[1]])}>
+                  {BOOK_NAME.map((n, i) => <option key={i} value={i}>{n}</option>)}
+                </select>
+              </label>
+              <F label="改成" value={adj[1]} set={(x) => setAdj([adj[0], x])} unit="U" />
+            </div>
+            <button className="btn-line wide" disabled={U(adj[1]) === null} onClick={() => act("adjustBook", [Number(adj[0]), U(adj[1])], `把${BOOK_NAME[Number(adj[0])]}改成 ${adj[1]} USDT`)}>
+              改数字
+            </button>
+            <p className="fine">只是改账，钱一直都在资金池钱包里。比如资金池钱包里本来就有 1 万 USDT 要算作保险，就把保险账改成 10000。</p>
+          </div>
+
+          <div className="adm-group">
+            <b>副管理员（最多 3 个）</b>
+            {v.subs.length === 0 && <p className="fine">还没有副管理员</p>}
+            {v.subs.map((a) => (
+              <div className="row-sb ins-sub-li" key={a}>
+                <span className="mono">{short(a)}</span>
+                <button className="btn-mini" onClick={() => act("delSub", [a], `删除副管理员 ${short(a)}`)}>删除</button>
+              </div>
+            ))}
+            <div className="inp-row">
+              <input placeholder="新副管理员钱包地址 0x…" value={newSub} onChange={(e) => setNewSub(e.target.value.trim())} />
+            </div>
+            <button className="btn-line wide" disabled={v.subs.length >= 3 || !/^0x[0-9a-fA-F]{40}$/.test(newSub)} onClick={() => act("addSub", [newSub], `添加副管理员 ${short(newSub)}`)}>
+              添加副管理员
+            </button>
+            <p className="fine">副管理员只能改每天限额，其他都只能看。</p>
+          </div>
+
+          <div className="adm-group">
+            <b>更换资金池钱包</b>
+            <div className="inp-row">
+              <input placeholder="新资金池钱包地址 0x…" value={newWallet} onChange={(e) => setNewWallet(e.target.value.trim())} />
+            </div>
+            <button className="btn-line wide" disabled={!/^0x[0-9a-fA-F]{40}$/.test(newWallet)} onClick={() => act("poolWallet", [newWallet], `资金池钱包换成 ${short(newWallet)}`)}>
+              更换
+            </button>
+            <p className="fine">换钱包后：新钱包要重新授权，旧钱包里的钱需要自己转过去，三本账的数字不变。</p>
+          </div>
+
+          <div className="adm-group">
+            {v.paused ? (
+              <button className="btn-line wide" onClick={() => act("resume", [], "恢复新买入")}>恢复新买入</button>
+            ) : (
+              <button className="btn-line wide danger" onClick={() => act("pause", [], "暂停新买入")}>暂停新买入</button>
+            )}
+            <p className="fine">暂停后不能新买入；卖出照常，谁都不能暂停卖出。</p>
+          </div>
+        </>
+      )}
+      {steps && <Steps steps={steps} />}
     </section>
   );
 }
@@ -1074,7 +1883,7 @@ function MinePage(props: {
                   直推 {u?.direct ?? 0} · 间推 {u?.indirect ?? 0} · 合计 {(u?.direct ?? 0) + (u?.indirect ?? 0)}
                 </div>
               </div>
-              <span className={"pill " + (u?.eligible ? "ok" : "no")}>{u?.eligible ? "动态资格有效" : !u || u.liquidity === 0n ? "动态资格未生效" : `未达${usd0(snap.params.thresholdUsd)} USDT门槛`}</span>
+              <span className={"pill " + (u?.eligible ? "ok" : "no")}>{u?.eligible ? "动态资格有效" : !u || u.liquidity === 0n ? "动态资格未生效" : `未达${usd0(SHOW_THR)} USDT门槛`}</span>
             </div>
           </section>
         </>
@@ -1132,8 +1941,8 @@ function ReferPage({ cfg, snap, live, account, backend, onConnect, toast }: { cf
   const u = snap.user;
   const base = cfg.appUrl || location.origin + location.pathname;
   const link = `${base}?ref=${account}`;
-  // 动态资格以合约为准：入金额度 ≥ 门槛
-  const thr = snap.params.thresholdUsd;
+  // 动态资格以合约为准；页面上显示的门槛固定 100 USDT（「还差」也按 100 算）
+  const thr = SHOW_THR;
   const T = usd0(thr);
   const meElig = !!u && u.eligible;
   const gap = u ? thr - u.principalUsd : thr;
@@ -1212,7 +2021,7 @@ function ReferPage({ cfg, snap, live, account, backend, onConnect, toast }: { cf
           </div>
           <img src={A("coins-pair.webp")} alt="" className="reward-gift" />
         </div>
-        <div className="fine-light">累计实际领取动态：{fmtUnits(u?.claimedDynamic ?? 0n, snap.rewardDecimals)} 喜羊羊 · 下级结算后入账</div>
+        <div className="fine-light">累计实际领取动态：{fmtUnits(u?.claimedDynamic ?? 0n, snap.rewardDecimals)} 喜羊羊</div>
       </section>
 
       <div className="seg">
@@ -1301,14 +2110,15 @@ function RecordsPage({ cfg, account, backend, onConnect, initial }: { cfg: AppCo
     );
   return (
     <>
-      <Hero title="记录" sub="查看流动性、领取、动态奖励及锁仓记录（来自链上事件）" img={A("sheep-thumb.webp")} />
-      <div className="seg four rec-tabs">
+      <Hero title="记录" sub="查看流动性、领取、动态奖励、锁仓及保险池记录（来自链上事件）" img={A("sheep-thumb.webp")} />
+      <div className="seg four five rec-tabs">
         {(
           [
             ["liquidity", "流动性"],
             ["claim", "领取"],
             ["dynamic", "动态奖励"],
             ["lock", "锁仓"],
+            ["ins", "保险池"],
           ] as const
         ).map(([k, l]) => (
           <button key={k} className={kind === k ? "on" : ""} onClick={() => setKind(k)}>
@@ -1780,7 +2590,7 @@ function RulesSheet({ snap, close }: { snap: Snapshot | null; close: () => void 
         <p><b>计价与领取：</b>奖励按 USDT 计价记账，领取时按喜羊羊「{snap?.twapMinutes ?? 15} 分钟平均价」和「现价」中较高的那个换算，由您手动领取并支付 BNB 网络费。页面数字每 3 秒更新一次预计值，不代表链上交易。</p>
         <p><b>自动检查：</b>系统每分钟自动检查，约每 25 分钟记录一次收益（需要暂停或恢复时立即更新）；超过 2 小时没有检查会自动停止计息，恢复后不补计。</p>
         <p><b>暂停：</b>运营钱包储备/授权不足、喜羊羊报价失效或管理员暂停时，停止新增入金和新增计息；已累计奖励保留；随时可以退出本金。</p>
-        <p><b>动态资格：</b>入金额度 ≥ {usd0(pr.thresholdUsd)} USDT（按添加时的价格计算，撤回时按比例扣减）。资格在下级每次结算时判定（下级操作或系统定期结算）；您自己退出导致失效时，从退出那一刻起停止获得动态奖励；恢复后不追溯。</p>
+        <p><b>动态资格：</b>入金额度 ≥ {usd0(SHOW_THR)} USDT（按添加时的价格计算，撤回时按比例扣减）。资格在下级每次结算时判定（下级操作或系统定期结算）；您自己退出导致失效时，从退出那一刻起停止获得动态奖励；恢复后不追溯。</p>
         <p><b>退出：</b>固定返还 POP + USDT 及该仓位手续费，不保证等于原入金金额。</p>
         <p><b>风险：</b>奖励来自运营钱包持有的喜羊羊，不是增发，也不保证一直足额兑付；价格波动会影响到手数量与本金价值。</p>
       </div>
@@ -1850,7 +2660,13 @@ function KeeperCard({ cfg }: { cfg: AppConfig }) {
   );
 }
 
-function AdminPage({ cfg, snap, backend, demo, isAdmin, adminAccount, refresh }: { cfg: AppConfig; snap: Snapshot; backend: Backend; demo: boolean; isAdmin: boolean; adminAccount: string; refresh: () => void }) {
+type AdmTab = "mine" | "lock" | "ins";
+const ADM_TAB_NAME: Record<AdmTab, string> = { mine: "挖矿", lock: "锁仓", ins: "保险池" };
+
+function AdminPage({ cfg, snap, backend, demo, isAdmin, isInsAdmin, initialTab, adminAccount, refresh }: { cfg: AppConfig; snap: Snapshot; backend: Backend; demo: boolean; isAdmin: boolean; isInsAdmin: boolean; initialTab: AdmTab; adminAccount: string; refresh: () => void }) {
+  // 三个后台分开：挖矿、锁仓给矿场管理员；保险池给保险池主管理员 / 副管理员（演示里三块都能看）
+  const tabs: AdmTab[] = demo ? ["mine", "lock", "ins"] : [...(isAdmin ? (["mine", "lock"] as AdmTab[]) : []), ...(isInsAdmin ? (["ins"] as AdmTab[]) : [])];
+  const [tab, setTab] = useState<AdmTab>(tabs.includes(initialTab) ? initialTab : tabs[0] ?? "mine");
   const can = isAdmin || demo;
   const pr = snap.params;
   const [amt, setAmt] = useState("");
@@ -1918,9 +2734,24 @@ function AdminPage({ cfg, snap, backend, demo, isAdmin, adminAccount, refresh }:
     <>
       <section className="card">
         <b className="h2">管理后台</b>
-        {!isAdmin && <div className="alert warn">{demo ? "演示：仅供查看，操作为模拟。" : "当前钱包不是管理员，链上也会拒绝操作。"}</div>}
-        <p className="fine">所有权限由合约校验。管理员不能提走本金、仓位NFT或手续费，也不能修改已累计的收益；调整参数只影响调整之后，暂停不影响用户退出。</p>
+        {tabs.length > 1 && (
+          <div className="seg three adm-tabs">
+            {tabs.map((t) => (
+              <button key={t} className={tab === t ? "on" : ""} onClick={() => setTab(t)}>
+                {ADM_TAB_NAME[t]}
+              </button>
+            ))}
+          </div>
+        )}
+        {tab === "mine" && !isAdmin && <div className="alert warn">{demo ? "演示：仅供查看，操作为模拟。" : "当前钱包不是管理员，链上也会拒绝操作。"}</div>}
+        {tab === "mine" && <p className="fine">所有权限由合约校验。管理员不能提走本金、仓位NFT或手续费，也不能修改已累计的收益；调整参数只影响调整之后，暂停不影响用户退出。</p>}
+        {tab === "lock" && <p className="fine">锁仓合约的后台，和挖矿、保险池分开管理。</p>}
+        {tab === "ins" && <p className="fine">保险池的后台，只有保险池主管理员和副管理员能进，和挖矿、锁仓分开管理。</p>}
       </section>
+      {tab === "ins" && <InsAdminCard snap={snap} backend={backend} account={adminAccount} demo={demo} />}
+      {tab === "lock" && <LockAdminCard snap={snap} backend={backend} account={adminAccount} demo={demo} explorer={cfg.explorer} />}
+      {tab === "mine" && (
+      <>
       <section className="card kv">
         <div><span>运营钱包</span><b className="mono">{short(snap.operator)}</b></div>
         <div><span>喜羊羊余额</span><b>{fmtUnits(r?.balance ?? null, snap.rewardDecimals)}</b></div>
@@ -1948,7 +2779,6 @@ function AdminPage({ cfg, snap, backend, demo, isAdmin, adminAccount, refresh }:
       <StatusLine snap={snap} force />
 
       <KeeperCard cfg={cfg} />
-      <LockAdminCard snap={snap} backend={backend} account={adminAccount} demo={demo} explorer={cfg.explorer} />
 
       <section className="card btn-col">
         <b>运行控制</b>
@@ -2036,6 +2866,8 @@ function AdminPage({ cfg, snap, backend, demo, isAdmin, adminAccount, refresh }:
           </div>
         ))}
       </section>
+      </>
+      )}
     </>
   );
 }

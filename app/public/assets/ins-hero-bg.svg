@@ -1,0 +1,28 @@
+<svg viewBox="0 0 988 420" preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg">
+<defs>
+<linearGradient id="sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0F3526"/><stop offset=".6" stop-color="#245C42"/><stop offset="1" stop-color="#2F6B4E"/></linearGradient>
+<radialGradient id="halo"><stop offset="0" stop-color="#F7D98A" stop-opacity=".45"/><stop offset="1" stop-color="#F7D98A" stop-opacity="0"/></radialGradient>
+<radialGradient id="moon"><stop offset="0" stop-color="#FFF0C4"/><stop offset="1" stop-color="#E8BE5E"/></radialGradient>
+<linearGradient id="a" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#6FA88A" stop-opacity=".75"/><stop offset=".7" stop-color="#3D7A5C" stop-opacity=".15"/></linearGradient>
+<linearGradient id="b" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3F8061"/><stop offset=".8" stop-color="#1E5039" stop-opacity=".3"/></linearGradient>
+<linearGradient id="c" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1E5039"/><stop offset="1" stop-color="#0A271B"/></linearGradient>
+<linearGradient id="mist" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#E6F0E4" stop-opacity="0"/><stop offset=".5" stop-color="#E6F0E4" stop-opacity=".22"/><stop offset="1" stop-color="#E6F0E4" stop-opacity="0"/></linearGradient>
+<g id="yun" fill="#0F3526" fill-opacity=".08" stroke="#E2BE6E" stroke-opacity=".28" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+<path d="M8 40 C-6 40 -6 20 10 20 C10 6 30 2 38 14 C44 0 70 0 74 18 C90 14 98 34 84 40 Z"/>
+<path fill="none" d="M24 30 c0-7 10-8 12-2 c2 5-4 8-6 4 M52 26 c2-8 14-8 15 0 c1 6-6 7-7 3"/>
+<path fill="none" d="M84 40 C100 40 112 34 124 36 M-6 40 C-20 40 -26 44 -34 44"/></g>
+</defs>
+<rect width="988" height="420" fill="url(#sky)"/>
+<circle cx="545" cy="95" r="110" fill="url(#halo)" opacity=".5"/>
+<circle cx="545" cy="95" r="38" fill="url(#moon)" opacity=".3"/>
+<path d="M0 250 L40 215 L70 228 L120 160 L150 185 L175 150 L215 205 L250 190 L300 230 L350 175 L380 120 L410 150 L440 132 L490 200 L530 178 L580 215 L640 150 L670 105 L700 140 L730 120 L790 190 L840 160 L890 200 L940 140 L988 175 V420 H0Z" fill="url(#a)"/>
+<rect y="195" width="988" height="80" fill="url(#mist)"/>
+<path d="M0 310 L50 270 L90 285 L140 235 L175 258 L210 225 L260 280 L310 262 L350 290 L400 245 L430 222 L470 258 L520 240 L560 280 L610 255 L660 218 L700 246 L760 230 L820 275 L880 240 L930 262 L988 238 V420 H0Z" fill="url(#b)"/>
+<rect y="270" width="988" height="70" fill="url(#mist)"/>
+<path d="M0 372 C70 345 130 338 200 358 C270 334 340 338 410 362 C490 336 570 332 650 356 C740 330 860 332 988 352 V420 H0Z" fill="url(#c)"/>
+<use href="#yun" transform="translate(410 70) scale(.95)"/>
+<use href="#yun" transform="translate(620 150) scale(.7)"/>
+<use href="#yun" transform="translate(60 330) scale(.8)"/>
+<use href="#yun" transform="translate(480 300) scale(.8)"/>
+<use href="#yun" transform="translate(40 30) scale(.6)"/>
+</svg>

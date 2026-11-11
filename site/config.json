@@ -15,5 +15,7 @@
   "oldMiner": "0x363CBA25a4bC4617fAF017b1e0728f4AB7473E17",
   "oldDeployBlock": 131739316,
   "lock": "0x2385EcA629297464FcBFC3eaD93160C00A649e1e",
-  "lockDeployBlock": 132747421
+  "lockDeployBlock": 132747421,
+  "ins": "0xFae8B3b5CFf10C5cac98b2Bf8Ea48a17355156F1",
+  "insDeployBlock": 133010105
 }

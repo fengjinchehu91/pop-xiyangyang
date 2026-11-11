@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>喜羊羊矿场 · POP 保险池合约部署</title>
+<style>
+  :root { --g: #0d5138; --g2: #116445; --gold: #e7b54a; --cream: #fbf7ef; --ink: #1d2a23; --muted: #6b766f; --line: #e7dfcf; --red: #b8442f; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #e9e3d6; color: var(--ink); font: 15px/1.5 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  .wrap { max-width: 520px; margin: 0 auto; min-height: 100vh; background: var(--cream); padding: calc(14px + env(safe-area-inset-top)) 14px calc(30px + env(safe-area-inset-bottom)); }
+  h1 { font-size: 20px; margin: 4px 0 2px; color: var(--g); }
+  .sub { color: var(--muted); font-size: 13px; margin: 0 0 12px; }
+  .card { background: #fffdf8; border: 1px solid var(--line); border-radius: 16px; padding: 14px; margin-top: 12px; }
+  .card h2 { font-size: 16px; margin: 0 0 8px; }
+  label { display: block; font-size: 13px; font-weight: 700; margin: 10px 0 4px; }
+  label small { font-weight: 400; color: var(--muted); }
+  input { width: 100%; min-height: 46px; border: 1.5px solid var(--line); border-radius: 12px; padding: 0 12px; font: 14px ui-monospace, Menlo, monospace; background: #fff; }
+  input:focus { outline: none; border-color: var(--g2); }
+  button { width: 100%; min-height: 50px; border: 0; border-radius: 14px; font-weight: 800; font-size: 16px; margin-top: 12px; cursor: pointer; }
+  .b-green { background: linear-gradient(180deg, var(--g2), var(--g)); color: #fff; }
+  .b-gold { background: linear-gradient(180deg, #f7d27a, var(--gold)); color: #3b2a06; }
+  .b-line { background: #fffaf0; border: 1.5px solid var(--gold); color: var(--ink); }
+  button:disabled { opacity: .45; }
+  .row { display: flex; justify-content: space-between; gap: 10px; font-size: 13.5px; padding: 5px 0; border-bottom: 1px dashed var(--line); }
+  .row b { word-break: break-all; text-align: right; }
+  ul.chk { list-style: none; padding: 0; margin: 6px 0 0; font-size: 13.5px; }
+  ul.chk li { padding: 5px 0 5px 26px; position: relative; border-bottom: 1px dashed var(--line); word-break: break-all; }
+  ul.chk li::before { position: absolute; left: 0; font-weight: 900; }
+  li.ok::before { content: "✓"; color: var(--g2); } li.bad::before { content: "✕"; color: var(--red); } li.warn::before { content: "!"; color: #a87400; } li.info::before { content: "·"; color: var(--muted); }
+  li.bad { color: var(--red); }
+  .note { background: #fff4d6; border: 1px solid #f0d79a; color: #6b4c00; border-radius: 12px; padding: 10px 12px; font-size: 13.5px; margin-top: 12px; }
+  .err { background: #fbe9e4; color: #7a2a1b; border-radius: 12px; padding: 10px 12px; font-size: 14px; margin-top: 12px; word-break: break-all; }
+  .done { background: #e6f1ea; color: var(--g); border-radius: 12px; padding: 12px; margin-top: 12px; word-break: break-all; }
+  table.rules { width: 100%; border-collapse: collapse; font-size: 13.5px; margin-top: 4px; }
+  table.rules td { padding: 5px 0; border-bottom: 1px dashed var(--line); }
+  table.rules td:last-child { text-align: right; font-weight: 700; }
+  a { color: var(--g2); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>喜羊羊矿场 · POP 保险池合约部署</h1>
+  <p class="sub">在钱包 App 内置浏览器中打开。本页只在你点击“部署”并在钱包里确认后才发送交易。保险池合约是单独的新合约，只读取挖矿合约的推荐关系，部署它不会影响挖矿和锁仓。</p>
+
+  <div class="card">
+    <h2>① 连接钱包</h2>
+    <div class="row"><span>钱包地址</span><b id="acct">未连接</b></div>
+    <div class="row"><span>网络</span><b id="net">—</b></div>
+    <div class="row"><span>BNB 余额</span><b id="bnb">—</b></div>
+    <button class="b-gold" id="btnConnect">连接钱包</button>
+    <p class="sub" style="margin-top:8px">任何钱包都可以部署，只付一点 BNB 手续费，<b>部署的钱包不会得到任何权限</b>。主管理员和资金池钱包已经固定写在下面。</p>
+  </div>
+
+  <div class="card">
+    <h2>② 确认参数</h2>
+    <label>挖矿合约地址 <small>（推荐关系从这里读取；POP/USDT 池、POP、USDT 也从这里自动读取）</small></label>
+    <input id="miner" placeholder="0x…" autocomplete="off" />
+    <label>主管理员 <small>（固定，部署后不能更换）</small></label>
+    <input id="admin" readonly />
+    <label>资金池钱包 <small>（固定：手续费进这里，赔付从这里扣）</small></label>
+    <input id="wallet" readonly />
+    <button class="b-line" id="btnCheck" disabled>检查所有地址（只读，不花钱）</button>
+    <ul class="chk" id="checks"></ul>
+  </div>
+
+  <div class="card">
+    <h2>③ 部署时的默认规则</h2>
+    <table class="rules">
+      <tr><td>每笔买入</td><td>200～2,000 USDT</td></tr>
+      <tr><td>每天限额</td><td>全网 50,000 · 每个钱包 4,000 USDT</td></tr>
+      <tr><td>买入手续费</td><td>1.5%（进保险账）</td></tr>
+      <tr><td>盈利费</td><td>15%，分配 保险 5 : 生态 3 : 动态 7</td></tr>
+      <tr><td>赔付</td><td>满 15 天卖出，亏多少赔多少（100%，不封顶）</td></tr>
+      <tr><td>推广</td><td>7 代，有效直推 = 持仓 ≥ 200 USDT</td></tr>
+      <tr><td>价格保护</td><td>现价偏离 15 分钟平均价超过 3% 时暂停买入</td></tr>
+    </table>
+    <p class="sub" style="margin-top:6px">部署后主管理员可在网站后台随时调整（买入手续费最高 10%，盈利费最高 50%）；只影响之后的新买入。</p>
+  </div>
+
+  <div class="card">
+    <h2>④ 部署</h2>
+    <div class="note">请确认：保险池合约已经过本地测试但<b>未经独立安全审计</b>；部署到主网是你本人的决定。<br>
+      合约没有任何能转走用户 POP 的功能，也不能暂停卖出；赔付只从资金池钱包按它给的固定授权额度扣。全额赔付意味着行情大跌时资金池可能被很快领空，你最多损失的是授权给合约的额度。</div>
+    <button class="b-green" id="btnDeploy" disabled>部署保险池合约</button>
+    <div id="status"></div>
+  </div>
+</div>
+
+<script>/*ETHERS*/</script>
+<script>
+const ARTIFACT = /*ARTIFACT*/;
+const DEFAULTS = {
+  miner: "0x45bdFd13950C8f5C9c587A83A9E90eA9dEEb069e", // 喜羊羊矿场 mining contract (live)
+  admin: "0x401F061a8A8c755197cc457fE79eF7Cb097EA86F", // 保险池主管理员 (given by the project owner)
+  wallet: "0x5626e70F28ADB7630E2741B9F0Fb926839e6fF2D", // 资金池钱包 (given by the project owner)
+  usdt: "0x55d398326f99059fF775485246999027B3197955", // BSC-USD
+  v3Factory: "0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865", // PancakeSwap V3 factory (BSC)
+};
+const q = new URLSearchParams(location.search);
+const LOCAL = q.get("local") === "1"; // local test chain only
+const WANT_CHAIN = LOCAL ? 31337 : 56;
+const EXPLORER = LOCAL ? "" : "https://bscscan.com";
+const WANT_ADMIN = (LOCAL && q.get("admin")) || DEFAULTS.admin;
+const $ = (id) => document.getElementById(id);
+$("miner").value = q.get("miner") || DEFAULTS.miner;
+const WALLET = (LOCAL && q.get("wallet")) || DEFAULTS.wallet;
+$("wallet").value = WALLET;
+$("admin").value = WANT_ADMIN;
+const E = ethers;
+let provider, signer, me = "", checked = null;
+
+const MINER_ABI = ["function POOL() view returns (address)", "function POP() view returns (address)", "function USDT() view returns (address)", "function getUser(address) view returns (address referrer, bool joined)"];
+const POOL_ABI = ["function token0() view returns (address)", "function token1() view returns (address)", "function fee() view returns (uint24)", "function factory() view returns (address)",
+  "function slot0() view returns (uint160,int24,uint16,uint16,uint16,uint32,bool)", "function liquidity() view returns (uint128)",
+  "function observe(uint32[]) view returns (int56[], uint160[])"];
+const ERC20_ABI = ["function symbol() view returns (string)", "function decimals() view returns (uint8)", "function balanceOf(address) view returns (uint256)"];
+const same = (a, b) => a && b && a.toLowerCase() === b.toLowerCase();
+const short = (a) => a.slice(0, 6) + "…" + a.slice(-4);
+
+function li(cls, text) { const e = document.createElement("li"); e.className = cls; e.textContent = text; $("checks").appendChild(e); return cls !== "bad"; }
+function showErr(m) { $("status").innerHTML = ""; const d = document.createElement("div"); d.className = "err"; d.textContent = m; $("status").appendChild(d); }
+function human(e) {
+  const m = String(e?.shortMessage || e?.reason || e?.message || e);
+  if (e?.code === "ACTION_REJECTED" || /reject|denied/i.test(m)) return "你在钱包里取消了，可以重新点击。";
+  if (/insufficient funds/i.test(m)) return "BNB 不足以支付手续费。";
+  const data = e?.data || e?.info?.error?.data;
+  try { if (data) { const d = new E.Interface(ARTIFACT.abi).parseError(data); if (d) return "合约拒绝部署：" + d.name + (d.name === "BadConfig" ? "（地址不符合要求）" : ""); } } catch {}
+  return m.slice(0, 300);
+}
+function fmtNum(x, dp) { const n = Number(x); if (!isFinite(n)) return String(x); return n >= 1 ? n.toLocaleString("en-US", { maximumFractionDigits: dp }) : n.toPrecision(4); }
+
+$("btnConnect").onclick = async () => {
+  try {
+    if (!window.ethereum) return showErr("没有检测到钱包。请在 TokenPocket / MetaMask / 币安钱包等 App 的内置浏览器里打开本页。");
+    provider = new E.BrowserProvider(window.ethereum);
+    await provider.send("eth_requestAccounts", []);
+    let net = await provider.getNetwork();
+    if (Number(net.chainId) !== WANT_CHAIN && !LOCAL) {
+      try { await provider.send("wallet_switchEthereumChain", [{ chainId: "0x38" }]); } catch {}
+      provider = new E.BrowserProvider(window.ethereum); net = await provider.getNetwork();
+    }
+    signer = await provider.getSigner();
+    me = await signer.getAddress();
+    $("acct").textContent = me;
+    $("net").textContent = Number(net.chainId) === 56 ? "BNB Smart Chain (56)" : `链 ${net.chainId}`;
+    $("bnb").textContent = E.formatEther(await provider.getBalance(me)).slice(0, 10) + " BNB";
+    if (Number(net.chainId) !== WANT_CHAIN) return showErr("网络不对：请在钱包里切换到 BNB Smart Chain 后刷新本页。");
+    $("btnCheck").disabled = false;
+    $("status").innerHTML = "";
+  } catch (e) { showErr(human(e)); }
+};
+
+$("btnCheck").onclick = async () => {
+  $("checks").innerHTML = ""; $("btnDeploy").disabled = true; checked = null;
+  let ok = true;
+  const miner = $("miner").value.trim();
+  const wallet = WALLET;
+  const admin = WANT_ADMIN;
+  try {
+    li("ok", `主管理员固定为 ${admin}（与谁部署无关）`);
+    if (same(me, admin)) li("info", "当前连接的就是主管理员钱包");
+    else li("info", `当前连接的钱包 ${short(me)} 只负责付部署手续费，不会得到任何权限`);
+    if (!E.isAddress(admin)) return li("bad", "主管理员不是有效地址");
+    if (!E.isAddress(miner)) return li("bad", "挖矿合约不是有效地址");
+    if (!E.isAddress(wallet)) return li("bad", "资金池钱包不是有效地址");
+    if ((await provider.getCode(miner)) === "0x") return li("bad", "挖矿合约地址上没有合约");
+    if (!LOCAL) ok = (same(miner, DEFAULTS.miner) ? li("ok", "就是现在网站正在用的挖矿合约") : li("warn", "这不是网站当前使用的挖矿合约，请确认")) && ok;
+    const M = new E.Contract(miner, MINER_ABI, provider);
+    let pool, pop, usdt;
+    try {
+      [pool, pop, usdt] = await Promise.all([M.POOL(), M.POP(), M.USDT()]);
+      await M.getUser(me);
+    } catch { return li("bad", "读不到挖矿合约的信息：这不是喜羊羊矿场的挖矿合约"); }
+    li("ok", `已从挖矿合约读到：POP/USDT 池 ${short(pool)}，POP ${short(pop)}，USDT ${short(usdt)}`);
+    if (!LOCAL) ok = (same(usdt, DEFAULTS.usdt) ? li("ok", "USDT 是 BSC-USD " + short(usdt)) : li("bad", "挖矿合约里的 USDT 不是已知的 BSC-USD")) && ok;
+    if (!LOCAL) ok = (same(wallet, DEFAULTS.wallet) ? li("ok", `资金池钱包就是约定的 ${wallet}`) : li("warn", "资金池钱包不是之前约定的地址，请确认")) && ok;
+    ok = ((await provider.getCode(wallet)) === "0x" ? li("ok", "资金池钱包是普通钱包") : li("warn", "资金池钱包是合约地址，请确认")) && ok;
+    if (same(wallet, admin)) li("warn", "资金池钱包和主管理员是同一个钱包（可以用，但建议分开）");
+    if (same(wallet, miner) || same(wallet, pool) || same(wallet, pop) || same(wallet, usdt)) ok = li("bad", "资金池钱包不能是合约或代币地址") && ok;
+
+    const P = new E.Contract(pool, POOL_ABI, provider);
+    const [t0, t1, fee, fac, s0, liq] = await Promise.all([P.token0(), P.token1(), P.fee(), P.factory(), P.slot0(), P.liquidity()]);
+    ok = ((same(t0, pop) && same(t1, usdt)) || (same(t1, pop) && same(t0, usdt)) ? li("ok", `POP/USDT 池里是 POP 和 USDT（手续费档 ${Number(fee) / 10000}%）`) : li("bad", "POP/USDT 池里的币对不上")) && ok;
+    if (!LOCAL) ok = (same(fac, DEFAULTS.v3Factory) ? li("ok", "POP/USDT 池来自 PancakeSwap V3 官方工厂") : li("bad", "POP/USDT 池不是 PancakeSwap V3 官方工厂创建的")) && ok;
+    let avgOk = true;
+    try { await P.observe([900, 0]); } catch { avgOk = false; }
+    ok = (avgOk ? li("ok", "池子有 15 分钟平均价（赔付和防砸盘用）") : li("bad", "池子暂时读不到 15 分钟平均价，保险池买卖都会被拒绝")) && ok;
+    if (liq === 0n) ok = li("bad", "池子当前没有流动性") && ok;
+
+    const U = new E.Contract(usdt, ERC20_ABI, provider), Pp = new E.Contract(pop, ERC20_ABI, provider);
+    const [ud, pd, ps, wb] = await Promise.all([U.decimals(), Pp.decimals(), Pp.symbol(), U.balanceOf(wallet)]);
+    if (!LOCAL) ok = (Number(ud) === 18 ? li("ok", "USDT 是 18 位小数（金额按 18 位计算）") : li("bad", `USDT 小数位是 ${ud}，不是 18`)) && ok;
+    const sp = Number(s0[0]) / 2 ** 96; const p1per0 = sp * sp; // token1 per token0 (raw units)
+    const usdtPerPop = same(t0, pop) ? p1per0 * 10 ** (Number(pd) - Number(ud)) : (1 / p1per0) * 10 ** (Number(pd) - Number(ud));
+    li("info", `${ps} 现价约 ${fmtNum(usdtPerPop, 8)} USDT`);
+    li("info", `资金池钱包现有 ${fmtNum(E.formatUnits(wb, ud), 2)} USDT。部署后：用资金池钱包在网站「管理 → 保险池」给合约授权固定额度；主管理员可把保险账改成资金池里准备用来赔付的金额`);
+    if (ok) checked = { usdt, pop, pool, miner, poolWallet: wallet, owner: admin };
+  } catch (e) { ok = li("bad", "检查出错：" + human(e)); }
+  $("btnDeploy").disabled = !ok || !checked;
+};
+
+$("btnDeploy").onclick = async () => {
+  if (!checked) return;
+  $("btnDeploy").disabled = true;
+  const st = $("status"); st.innerHTML = '<div class="note">请在钱包中确认部署交易…</div>';
+  try {
+    const f = new E.ContractFactory(ARTIFACT.abi, ARTIFACT.bytecode, signer);
+    const c = await f.deploy(checked);
+    const tx = c.deploymentTransaction();
+    st.innerHTML = `<div class="note">已提交，等待链上确认…<br>交易：${tx.hash}</div>`;
+    const rc = await tx.wait();
+    const addr = await c.getAddress();
+    const I = new E.Contract(addr, ARTIFACT.abi, provider);
+    const [owner, m, pool, pop, usdt, wallet, p, rev] = await Promise.all([I.owner(), I.MINER(), I.POOL(), I.POP(), I.USDT(), I.poolWallet(), I.getParams(), I.rev()]);
+    const one = 10n ** 18n;
+    const rulesOk = p.minBuy === 200n * one && p.maxBuy === 2000n * one && p.globalDaily === 50000n * one && p.walletDaily === 4000n * one && p.directMin === 200n * one
+      && Number(p.buyFeeBps) === 150 && Number(p.profitFeeBps) === 1500 && Number(p.compRatioBps) === 10000 && Number(p.compCapBps) === 10000 && Number(p.waitDays) === 15
+      && Number(p.splitIns) === 5 && Number(p.splitEco) === 3 && Number(p.splitDyn) === 7;
+    const okAll = same(owner, checked.owner) && same(m, checked.miner) && same(pool, checked.pool) && same(pop, checked.pop) && same(usdt, checked.usdt) && same(wallet, checked.poolWallet) && (LOCAL || rulesOk) && Number(rev) === 1;
+    const mark = (b) => (b ? " ✓" : " ✕");
+    st.innerHTML = `<div class="done"><b>${okAll ? "部署成功 ✓" : "已部署，但核验不一致，请勿使用"}</b><br>
+      保险池合约地址：<b id="addr">${addr}</b><br>部署区块：<b>${rc.blockNumber}</b><br>
+      主管理员：${owner}${mark(same(owner, checked.owner))}<br>
+      资金池钱包：${wallet}${mark(same(wallet, checked.poolWallet))}<br>
+      挖矿合约（推荐关系）：${m}${mark(same(m, checked.miner))}<br>
+      POP/USDT 池：${pool}${mark(same(pool, checked.pool))}<br>
+      默认规则：${rulesOk ? "200～2000 U · 手续费 1.5% · 盈利费 15% · 满 15 天全额赔 · 5:3:7 ✓" : (LOCAL ? "（本地测试链）" : "✕")}<br>
+      ${EXPLORER ? `<a href="${EXPLORER}/address/${addr}" target="_blank" rel="noreferrer">在 BscScan 查看 ↗</a><br>` : ""}
+      下一步：把保险池合约地址和部署区块号发给我，我把网站接上。网站接上后：用资金池钱包在「管理 → 保险池」给合约授权固定额度；用主管理员钱包把保险账改成准备用来赔付的金额。
+      <button class="b-line" id="copy">复制保险池合约地址</button></div>`;
+    $("copy").onclick = () => navigator.clipboard?.writeText(addr);
+  } catch (e) { showErr(human(e)); $("btnDeploy").disabled = false; }
+};
+</script>
+</body>
+</html>
