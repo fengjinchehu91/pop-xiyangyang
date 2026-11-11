@@ -251,7 +251,7 @@ function BindGate({ cfg, snap, backend, refParam, account, canTx, demo, onConnec
   return (
     <main className="content gate">
       <section className="card gate-card">
-        <img src={A("sheep-thumb.png")} alt="" className="gate-img" />
+        <img src={A("sheep-thumb.webp")} alt="" className="gate-img" />
         <h2>绑定推荐人</h2>
         <p className="gate-sub">绑定后即可进入喜羊羊矿场</p>
 
@@ -347,7 +347,7 @@ function OldSheet({ snap, backend, canTx, close, done }: { snap: Snapshot; backe
         <b className="q-title">预计返还</b>
         <div className="qr-row">
           <span>
-            <img src={A("pop-coin.png")} alt="" className="tok" /> POP
+            <img src={A("pop-coin.webp")} alt="" className="tok" /> POP
           </span>
           <b>{amts ? fmtUnits(amts[0], snap.popDecimals) : "…"}</b>
         </div>
@@ -444,7 +444,7 @@ function LockPage({ cfg, snap, account, backend, canTx, onConnect, goRecords }: 
   if (v === null)
     return (
       <>
-        <Hero title="锁仓" sub="锁仓喜羊羊或 POP，每天释放，锁仓即得奖励" img={A("sheep-safe.png")} />
+        <Hero title="锁仓" sub="锁仓喜羊羊或 POP，每天释放，锁仓即得奖励" img={A("sheep-safe.webp")} />
         <div className="card center"><p className="muted">锁仓即将开放，敬请期待</p></div>
       </>
     );
@@ -501,7 +501,7 @@ function LockPage({ cfg, snap, account, backend, canTx, onConnect, goRecords }: 
   const canClaim = !!me && (me.claimable[0] > 0n || me.claimable[1] > 0n);
   return (
     <>
-      <Hero title="锁仓" sub="锁仓喜羊羊或 POP，每天释放，锁仓即得奖励" img={A("sheep-safe.png")} />
+      <Hero title="锁仓" sub="锁仓喜羊羊或 POP，每天释放，锁仓即得奖励" img={A("sheep-safe.webp")} />
 
       <section className="card lock-net">
         <b>全网锁仓</b>
@@ -858,12 +858,12 @@ function Header({ cfg, account, onConnect, snap }: { cfg: AppConfig; account: st
   return (
     <header className="hdr">
       <div className="brand">
-        <img src={A("xyy-coin.png")} alt="" className="brand-ic" />
+        <img src={A("xyy-coin.webp")} alt="" className="brand-ic" />
         <span>喜羊羊矿场</span>
       </div>
       <div className="hdr-r">
         <span className="chip-bsc">
-          <i className="chip-ic"><img src={A("bnb.png")} alt="" /></i>
+          <i className="chip-ic"><img src={A("bnb.webp")} alt="" /></i>
           <b>{cfg.chainId === 56 ? "BSC" : `链 ${cfg.chainId}`}</b>
         </span>
         <button className="wallet-btn" onClick={onConnect}>
@@ -901,7 +901,7 @@ function StatusLine({ snap, account, force }: { snap: Snapshot; account?: string
 function Hero({ title, sub, img, tag }: { title: React.ReactNode; sub?: string; img: string; tag?: string }) {
   return (
     <section className={"hero" + (img ? " plain" : "")}>
-      {!img && <img src={A("banner.jpg")} alt="" className="hero-bg" />}
+      {!img && <img src={A("banner.webp")} alt="" className="hero-bg" />}
       <div className="hero-txt">
         <h1>{title}</h1>
         {sub && <p>{sub}</p>}
@@ -944,7 +944,7 @@ function MinePage(props: {
 
       {!account ? (
         <div className="card center">
-          <img src={A("sheep-thumb.png")} alt="" className="empty-img" />
+          <img src={A("sheep-thumb.webp")} alt="" className="empty-img" />
           <p className="muted">连接钱包后查看您的流动性与收益</p>
           <button className="btn-gold" onClick={props.onConnect}>连接钱包</button>
         </div>
@@ -952,7 +952,7 @@ function MinePage(props: {
         <>
           <section className="card reward">
             <div className="reward-top">
-              <img src={A("xyy-coin.png")} alt="喜羊羊" className="coin-lg" />
+              <img src={A("xyy-coin.webp")} alt="喜羊羊" className="coin-lg" />
               <div className="grow">
                 <div className="lbl-light">待领取喜羊羊（预计）</div>
                 {(() => {
@@ -960,7 +960,7 @@ function MinePage(props: {
                   return <div className={"big" + (t.length > 10 ? " long" : "")}>{t}</div>;
                 })()}
               </div>
-              <img src={A("chest.png")} alt="" className="reward-gift" />
+              <img src={A("chest.webp")} alt="" className="reward-gift" />
             </div>
             <div className="split">
               <div>
@@ -993,7 +993,7 @@ function MinePage(props: {
             </div>
             <div className="assets">
               <span>
-                <img src={A("pop-coin.png")} alt="POP" /> {fmtUnits(u?.popAmt ?? 0n, snap.popDecimals)} POP
+                <img src={A("pop-coin.webp")} alt="POP" /> {fmtUnits(u?.popAmt ?? 0n, snap.popDecimals)} POP
               </span>
               <span>
                 <i className="usdt-ic">U</i> {fmtUnits(u?.usdtAmt ?? 0n, snap.usdtDecimals)} USDT
@@ -1093,7 +1093,7 @@ function ReferPage({ cfg, snap, live, account, backend, onConnect, toast }: { cf
   if (!account)
     return (
       <div className="card center">
-        <img src={A("sheep-safe.png")} alt="" className="empty-img" />
+        <img src={A("sheep-safe.webp")} alt="" className="empty-img" />
         <p className="muted">连接钱包后查看推荐信息</p>
         <button className="btn-gold" onClick={onConnect}>连接钱包</button>
       </div>
@@ -1132,7 +1132,7 @@ function ReferPage({ cfg, snap, live, account, backend, onConnect, toast }: { cf
           <b>邀请好友加入喜羊羊矿场</b>
           <p className="fine">分享链接，好友打开后绑定你为推荐人，之后可产生动态收益。</p>
         </div>
-        <img src={A("sheep-safe.png")} alt="" className="invite-img" />
+        <img src={A("sheep-safe.webp")} alt="" className="invite-img" />
         <div className="link-row">
           <span className="link-txt">{link}</span>
           <button
@@ -1172,14 +1172,14 @@ function ReferPage({ cfg, snap, live, account, backend, onConnect, toast }: { cf
 
       <section className="card reward dyn">
         <div className="reward-top">
-          <img src={A("xyy-coin.png")} alt="" className="coin-lg" />
+          <img src={A("xyy-coin.webp")} alt="" className="coin-lg" />
           <div className="grow">
             <div className="lbl-light">待领取动态收益（预计）</div>
             <div className="big">
               {live?.dynamicTokens != null ? fmtUnits(live.dynamicTokens, snap.rewardDecimals) : "—"} <small>喜羊羊</small>
             </div>
           </div>
-          <img src={A("coins-pair.png")} alt="" className="reward-gift" />
+          <img src={A("coins-pair.webp")} alt="" className="reward-gift" />
         </div>
         <div className="fine-light">累计实际领取动态：{fmtUnits(u?.claimedDynamic ?? 0n, snap.rewardDecimals)} 喜羊羊 · 下级结算后入账</div>
       </section>
@@ -1270,7 +1270,7 @@ function RecordsPage({ cfg, account, backend, onConnect, initial }: { cfg: AppCo
     );
   return (
     <>
-      <Hero title="记录" sub="查看流动性、领取、动态奖励及锁仓记录（来自链上事件）" img={A("sheep-thumb.png")} />
+      <Hero title="记录" sub="查看流动性、领取、动态奖励及锁仓记录（来自链上事件）" img={A("sheep-thumb.webp")} />
       <div className="seg four rec-tabs">
         {(
           [
@@ -1645,7 +1645,7 @@ function ExitSheet({ snap, backend, account, canTx, close, done }: { snap: Snaps
         <b className="q-title">预计返还</b>
         <div className="qr-row">
           <span>
-            <img src={A("pop-coin.png")} alt="" className="tok" /> POP
+            <img src={A("pop-coin.webp")} alt="" className="tok" /> POP
           </span>
           <b>{q ? fmtUnits(q.pop, snap.popDecimals) : "…"}</b>
         </div>
@@ -1706,7 +1706,7 @@ function ClaimSheet({ snap, live, backend, canTx, close, done }: { snap: Snapsho
     }
   };
   return (
-    <Sheet title="领取喜羊羊" close={close} icon={<img src={A("xyy-coin.png")} className="tok" alt="" />}>
+    <Sheet title="领取喜羊羊" close={close} icon={<img src={A("xyy-coin.webp")} className="tok" alt="" />}>
       <div className="quote">
         <div className="qr-row">
           <span>个人收益</span>
