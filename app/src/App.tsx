@@ -920,9 +920,6 @@ function InsHome({ snap, backend, account, canTx, onConnect, goRecords }: { snap
         <button className="btn-gold wide" disabled={!!account && (!canTx || v.paused)} onClick={() => (account ? setSheet("buy") : onConnect())}>
           {v.paused ? "暂停新买入" : "买入 POP"}
         </button>
-        <p className="fine-light">
-          每笔 {fmtUnits(p.minBuy, ud, 0)}～{fmtUnits(p.maxBuy, ud, 0)} USDT · 买入手续费 {pct(p.buyFeeBps)} · 赚了收盈利的 {pct(p.profitFeeBps)}
-        </p>
         {v.paused && <p className="fine-light">管理员已暂停新买入，已买的可以照常卖出</p>}
       </section>
 
@@ -1195,7 +1192,7 @@ function InsBuySheet({ v, snap, backend, close, done }: { v: InsView; snap: Snap
       {bad && <p className="err ins-err">{bad}</p>}
       <div className="note-gold ins-note">
         这一笔的规则买入时就定下：持有满 {p.waitDays} 天后卖出，{p.compRatioBps >= 10_000 ? "亏多少赔多少" : `亏损赔 ${pct(p.compRatioBps)}`}
-        {p.compCapBps < 10_000 ? `（每笔最多赔本金的 ${pct(p.compCapBps)}）` : ""}；赚了收盈利的 {pct(p.profitFeeBps)}。以后后台改数字，不影响这一笔。
+        {p.compCapBps < 10_000 ? `（每笔最多赔本金的 ${pct(p.compCapBps)}）` : ""}；赚了收盈利的 {pct(p.profitFeeBps)}。
       </div>
       {steps && <Steps steps={steps} />}
       {steps && steps.every((s) => s.status === "done" || s.status === "skipped") ? (
@@ -1308,11 +1305,6 @@ function InsSellSheet({ v, snap, backend, account, lot, close, done }: { v: InsV
           )}
         </div>
       )}
-      <div className="note-gold ins-note">
-        {ok
-          ? `这笔已满 ${lot.rule.waitDays} 天：亏了按卖出价和 15 分钟平均价里亏得少的那个赔，买入手续费不赔。赔付最多赔到保险池现在的余额 ${fmtUnits(insPayable(v), ud)} USDT。`
-          : `这笔还没满 ${lot.rule.waitDays} 天：现在卖出亏了不赔，赚了照样收盈利费。`}
-      </div>
       {steps && <Steps steps={steps} />}
       {steps && steps.every((s) => s.status === "done" || s.status === "skipped") ? (
         <button className="btn-green wide" onClick={close}>完成</button>
