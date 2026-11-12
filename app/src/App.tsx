@@ -893,7 +893,6 @@ function InsHome({ snap, backend, account, canTx, onConnect, goRecords }: { snap
   const pop = lots.reduce((s, l) => s + l.left, 0n);
   const value = valueOf(pop);
   const cost = lots.reduce((s, l) => s + l.paidLeft, 0n);
-  const pl = value - cost;
   return (
     <>
       <InsBanner days={p.waitDays} />
@@ -905,7 +904,7 @@ function InsHome({ snap, backend, account, canTx, onConnect, goRecords }: { snap
           </span>
         </div>
         <div className="big">
-          {fmtUnits(insPayable(v), ud)} <small>USDT</small>
+          {fmtUnits(v.wallet.balance, ud)} <small>USDT</small>
         </div>
         <div className="split">
           <div>
@@ -944,12 +943,6 @@ function InsHome({ snap, backend, account, canTx, onConnect, goRecords }: { snap
                   <img src={A("pop-coin.webp")} alt="POP" /> {fmtUnits(pop, pd)} POP
                 </span>
                 <span>成本 {fmtUnits(cost, ud)} USDT</span>
-              </div>
-              <div className="prin-row">
-                <span>目前盈亏</span>
-                <b className={pl >= 0n ? "ok-t" : "err-b"}>
-                  {sgnU(pl, ud)} USDT{cost > 0n ? `（${pl >= 0n ? "+" : "-"}${(Number(((pl < 0n ? -pl : pl) * 10_000n) / cost) / 100).toFixed(2)}%）` : ""}
-                </b>
               </div>
             </section>
 
